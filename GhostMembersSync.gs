@@ -16,7 +16,7 @@ const GHOST_HEADERS = [
   'Tiers', 'Subscriptions', 'Stripe Customer ID', 'Complimentary Plan',
   'Geolocation', 'Attribution ID', 'Attribution URL', 'Attribution Type',
   'Attribution Title', 'Referrer Source', 'Referrer Medium', 'Referrer URL',
-  'Unsubscribe URL', 'Last Seen At', 'Last Synced'
+  'Unsubscribe URL', 'Last Seen At', 'Last Sync Member', 'Last Sync Attribution'
 ];
 
 const MEMBERS_PAGE_SIZE = 100;
@@ -57,23 +57,30 @@ function showSettings() {
 
   const currentUrl = props.getProperty('GHOST_URL') || '';
   const currentKey = props.getProperty('ADMIN_API_KEY') || '';
+  const currentIncludeAttribution = props.getProperty('INCLUDE_ATTRIBUTION') !== 'false';
 
   // Get Ghost URL
   const urlResponse = ui.prompt(
     '⚙️ Ghost URL',
-    `Enter your Ghost site URL (without trailing slash):\n\nExample: https://yoursite.com\n\nCurrent: ${currentUrl || 'Not set'}`,
+    `Enter your Ghost site URL:\n\nExample: https://yoursite.com\n\nCurrent: ${currentUrl || 'Not set'}\nLeave empty to keep current setting.`,
     ui.ButtonSet.OK_CANCEL
   );
 
   if (urlResponse.getSelectedButton() !== ui.Button.OK) return;
 
   let ghostUrl = urlResponse.getResponseText().trim();
+
+  // Empty string means "leave unchanged"
+  if (ghostUrl === '') {
+    ghostUrl = currentUrl;
+  }
+
   if (!ghostUrl) {
     ui.alert('❌ Error', 'Ghost URL is required', ui.ButtonSet.OK);
     return;
   }
 
-  // Remove trailing slash
+  // remove trailing slash
   if (ghostUrl.endsWith('/')) {
     ghostUrl = ghostUrl.slice(0, -1);
   }
@@ -81,13 +88,19 @@ function showSettings() {
   // Get Admin API Key
   const keyResponse = ui.prompt(
     '🔑 Admin API Key',
-    `Enter your Ghost Admin API Key:\n\nFormat: id:secret (with colon)\n\nGet it from: Ghost Admin → Settings → Integrations\n\nCurrent: ${currentKey ? '(set)' : 'Not set'}`,
+    `Enter your Ghost Admin API Key:\n\nFormat: id:secret (with colon)\nGet it from: Ghost Admin → Settings → Integrations\n\nCurrent: ${currentKey ? '(set)' : 'Not set'}\nLeave empty to keep current setting.`,
     ui.ButtonSet.OK_CANCEL
   );
 
   if (keyResponse.getSelectedButton() !== ui.Button.OK) return;
 
-  const adminApiKey = keyResponse.getResponseText().trim();
+  let adminApiKey = keyResponse.getResponseText().trim();
+
+  // Empty string means "leave unchanged"
+  if (adminApiKey === '') {
+    adminApiKey = currentKey;
+  }
+
   if (!adminApiKey) {
     ui.alert('❌ Error', 'Admin API Key is required', ui.ButtonSet.OK);
     return;
@@ -102,6 +115,17 @@ function showSettings() {
     );
     return;
   }
+
+  // Get attribution preference
+  const attributionResponse = ui.alert(
+    '📊 Attribution Data',
+    `Include member attribution data in sync?\n\nAttribution data includes signup source, referrer, and other info about how someone signed up. This data can be useful but including it significantly increases sync time.\n\nCurrent: ${currentIncludeAttribution ? 'Yes' : 'No'}`,
+    ui.ButtonSet.YES_NO
+  );
+
+  if (attributionResponse === ui.Button.CANCEL) return;
+
+  const includeAttribution = attributionResponse === ui.Button.YES;
 
   // Test connection
   const testResponse = ui.alert(
@@ -125,6 +149,7 @@ function showSettings() {
   // Save settings
   props.setProperty('GHOST_URL', ghostUrl);
   props.setProperty('ADMIN_API_KEY', adminApiKey);
+  props.setProperty('INCLUDE_ATTRIBUTION', includeAttribution.toString());
 
   ui.alert('✅ Settings Saved', 'Ready to sync members!', ui.ButtonSet.OK);
 }
@@ -133,7 +158,8 @@ function getSettings() {
   const props = PropertiesService.getDocumentProperties();
   return {
     ghostUrl: props.getProperty('GHOST_URL') || '',
-    adminApiKey: props.getProperty('ADMIN_API_KEY') || ''
+    adminApiKey: props.getProperty('ADMIN_API_KEY') || '',
+    includeAttribution: props.getProperty('INCLUDE_ATTRIBUTION') !== 'false'
   };
 }
 
@@ -282,10 +308,10 @@ function deleteContinuationTriggers() {
 // GHOST API
 // ============================================
 
-// fetch IDs of current members one page at a time. We get their details one-by-one with fetchMemberById
+// Fetch members with full data (except attribution which requires fetchMemberById)
 function fetchMembersPage(ghostUrl, adminApiKey, afterId = null) {
   const token = generateToken(adminApiKey);
-  let url = `${ghostUrl}/ghost/api/admin/members/?limit=${MEMBERS_PAGE_SIZE}&order=id ASC&fields=id`;
+  let url = `${ghostUrl}/ghost/api/admin/members/?limit=${MEMBERS_PAGE_SIZE}&order=id ASC&include=labels,newsletters,subscriptions,tiers`;
 
   if (afterId) {
     const filter = `id:>'${afterId}'`;
@@ -332,6 +358,9 @@ function getOrCreateSheet() {
 
   if (!sheet) {
     sheet = ss.insertSheet(sheetName);
+    // Protect the entire sheet with warning on edit
+    const protection = sheet.protect().setDescription('Used by Ghost Sync - Don\'t delete any columns');
+    protection.setWarningOnly(true);
   }
 
   return sheet;
@@ -363,50 +392,26 @@ function setupSheet() {
   for (const protection of sheetProtections) {
     protection.remove();
   }
-
-  // Protect the entire sheet with warning on edit
-  const protection = sheet.protect().setDescription('Used by Ghost Sync - Don\'t delete any columns');
-  protection.setWarningOnly(true);
-
-  sheet.autoResizeColumns(1, headers.length);
 }
 
 function updateStatusRow(message) {
   const sheet = getOrCreateSheet();
 
-  if (!message) {
-    clearStatusRow();
-    return;
-  }
+  // Merge columns for better formatting (start at column 2 to preserve spinner in column 1)
+  const statusCell = sheet.getRange(STATUS_ROW, 2, 1, 19);
 
-  // Merge columns for better centering
-  const statusCell = sheet.getRange(STATUS_ROW, 1, 1, 20);
   statusCell
     .merge()
     .setValue(message)
-    .setHorizontalAlignment('center')
     .setVerticalAlignment('middle')
     .setFontColor('#856404')
-    .setFontWeight('bold');
+    .setFontWeight('bold')
+    .setBackground('#98FB98');
 
   SpreadsheetApp.flush();
 }
 
-function clearStatusRow() {
-  const sheet = getOrCreateSheet();
-
-  hideSpinner();
-
-  // Clear content and formatting
-  const statusCell = sheet.getRange(STATUS_ROW, 1, 1, GHOST_HEADERS.length);
-  statusCell.breakApart();
-  statusCell.clear();
-  statusCell.clearFormat();
-
-  SpreadsheetApp.flush();
-}
-
-function memberToRow(member, syncTimestamp) {
+function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = null) {
   // Get nested objects with fallback
   const attribution = member.attribution || {};
 
@@ -463,7 +468,8 @@ function memberToRow(member, syncTimestamp) {
     // Tracking
     member.unsubscribe_url || '',
     member.last_seen_at || '',
-    new Date(syncTimestamp).toISOString()
+    new Date(memberSyncTimestamp).toISOString(),
+    attributionSyncTimestamp ? new Date(attributionSyncTimestamp).toISOString() : ''
   ];
 
   return rowData;
@@ -482,18 +488,18 @@ function quickUpdateWithUI() {
 
     // Expected headers count
     const expectedHeadersLength = GHOST_HEADERS.length;
-    const lastSyncedIndex = GHOST_HEADERS.length - 1;
+    const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
 
-    // Check key columns including Last Synced (required for quick sync)
+    // Check key columns including Last Sync Member (required for quick sync)
     if (headers.length < expectedHeadersLength ||
         headers[0] !== GHOST_HEADERS[0] ||
         headers[1] !== GHOST_HEADERS[1] ||
-        headers[lastSyncedIndex] !== GHOST_HEADERS[lastSyncedIndex]) {
+        headers[lastSyncMemberIndex] !== GHOST_HEADERS[lastSyncMemberIndex]) {
 
       const ui = SpreadsheetApp.getUi();
       ui.alert(
         '⚠️ Quick Update Not Available',
-        `The sheet doesn't have the correct column structure.\n\nExpected: ${expectedHeadersLength} columns with "${GHOST_HEADERS[0]}", "${GHOST_HEADERS[1]}", and "${GHOST_HEADERS[lastSyncedIndex]}"\nFound: ${headers.length} columns with "${headers[0] || 'Empty'}", "${headers[1] || 'Empty'}", and "${headers[lastSyncedIndex] || 'Missing'}"\n\nPlease run a "Full Update" to recreate the sheet with the correct structure.`,
+        `The sheet doesn't have the correct column structure.\n\nExpected: ${expectedHeadersLength} columns with "${GHOST_HEADERS[0]}", "${GHOST_HEADERS[1]}", and "${GHOST_HEADERS[lastSyncMemberIndex]}"\nFound: ${headers.length} columns with "${headers[0] || 'Empty'}", "${headers[1] || 'Empty'}", and "${headers[lastSyncMemberIndex] || 'Missing'}"\n\nPlease run a "Full Update" to recreate the sheet with the correct structure.`,
         ui.ButtonSet.OK
       );
       return;
@@ -523,7 +529,8 @@ function cancelUpdate() {
 
   deleteContinuationTriggers();
   clearState();
-  clearStatusRow();
+  hideSpinner();
+  updateStatusRow("Update cancelled")
 
   SpreadsheetApp.getUi().alert(
     '✅ Update Cancelled',
@@ -570,8 +577,16 @@ function syncMembersWithUI(isFullUpdate) {
     return;
   }
 
-  try {
+  // If attribution is off, Quick Update has no advantage - just do Full Update
+  if (!isFullUpdate && !settings.includeAttribution) {
+    Logger.log('Attribution disabled - Quick Update redirecting to Full Update');
+    isFullUpdate = true;
+    SpreadsheetApp.getActiveSpreadsheet().toast('Attribution is disabled so doing a Full Update...', 'Ghost Sync', 3);
+  } else {
     SpreadsheetApp.getActiveSpreadsheet().toast('Preparing to update...', 'Ghost Sync', 3);
+  }
+
+  try {
     const sheet = getOrCreateSheet();
 
     if (isFullUpdate) {
@@ -603,10 +618,15 @@ function syncMembersWithUI(isFullUpdate) {
 
 function showSpinner() {
   const sheet = getOrCreateSheet();
-  const image = sheet.insertImage('https://files.sidget.com/spinner.gif', STATUS_ROW, 1);
-  image.setAltTextTitle(SPINNER_ALT_TITLE);
-  image.setWidth(60);
-  image.setHeight(30);
+
+  // Base64 encoded spinner GIF
+  const base64Gif = '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';
+  const blob = Utilities.newBlob(Utilities.base64Decode(base64Gif), 'image/gif', 'spinner.gif');
+
+  sheet.insertImage(blob, STATUS_ROW, 1, 40, 0)
+    .setHeight(16)
+    .setWidth(16)
+    .setAltTextTitle(SPINNER_ALT_TITLE);
 }
 
 function hideSpinner() {
@@ -629,7 +649,7 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
     syncStartTime = startTime;
   }
 
-  Logger.log(`${updateType}: afterId=${lastProcessedId || 'null'}, synced=${membersSynced}, syncStartTime=${syncStartTime}`);
+  Logger.log(`${updateType}: afterId=${lastProcessedId || 'null'}, synced=${membersSynced}, syncStartTime=${syncStartTime}, includeAttribution=${settings.includeAttribution}`);
 
   if (!lastProcessedId) {
     // first round so show spinner
@@ -638,16 +658,18 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
     updateStatusRow('Starting sync...');
   }
 
-  let existingMemberIds = {};
+  let existingMemberIdToRow = {};
 
-  // For quick update on first run, build set of existing IDs
+  // For quick update on first run, build map of existing IDs to row numbers
   if (!isFullUpdate && !lastProcessedId && sheet.getLastRow() > HEADER_ROW) {
     updateStatusRow('Checking existing members...');
     const existingData = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, 1).getValues();
-    for (const row of existingData) {
-      if (row[0]) existingMemberIds[row[0]] = true;
+    for (let i = 0; i < existingData.length; i++) {
+      if (existingData[i][0]) {
+        existingMemberIdToRow[existingData[i][0]] = i + DATA_START_ROW;
+      }
     }
-    Logger.log(`Found ${Object.keys(existingMemberIds).length} existing members`);
+    Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
   }
 
   let hasMore = true;
@@ -663,7 +685,7 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
       return;  // bail from this function early
     }
 
-    // Fetch next page
+    // Fetch next page with full member data
     Logger.log(`Fetching page: afterId=${afterId || 'null'}`);
     const membersPage = fetchMembersPage(settings.ghostUrl, settings.adminApiKey, afterId);
     Logger.log(`Received ${membersPage.length} members`);
@@ -674,39 +696,96 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
       break;
     }
 
-    // Filter for quick update
-    const membersToProcess = isFullUpdate
-      ? membersPage
-      : membersPage.filter(m => !existingMemberIds[m.id]);
+    // Process members differently for quick vs full update
+    if (isFullUpdate) {
+      // Full update: process all members
+      Logger.log(`Processing ${membersPage.length} members for full update`);
+      const rows = [];
 
-    if (membersToProcess.length === 0) {
-      Logger.log(`Skipping ${membersPage.length} existing members`);
-      afterId = membersPage[membersPage.length - 1].id;
-      hasMore = membersPage.length === MEMBERS_PAGE_SIZE;
-      continue;
-    }
+      for (const member of membersPage) {
+        let memberData = member;
+        let attributionTimestamp = null;
 
-    // Fetch full details and build rows
-    Logger.log(`Processing ${membersToProcess.length} members`);
-    const rows = [];
-    for (const member of membersToProcess) {
-      const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
-      if (fullMember) {
-        rows.push(memberToRow(fullMember, syncStartTime));
+        // Fetch attribution data if enabled
+        if (settings.includeAttribution) {
+          const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
+          if (fullMember) {
+            memberData = fullMember;
+            attributionTimestamp = syncStartTime;
+          }
+        }
+
+        rows.push(memberToRow(memberData, syncStartTime, attributionTimestamp));
+      }
+
+      // Batch write rows
+      if (rows.length > 0) {
+        const lastRow = sheet.getLastRow();
+        const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
+        sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
+        membersSynced += rows.length;
+        Logger.log(`Wrote ${rows.length} rows at row ${nextRow}, total: ${membersSynced}`);
+      }
+
+    } else {
+      // Quick update: update existing members, add new ones
+      const newMembers = [];
+      const existingMembersToUpdate = [];
+
+      for (const member of membersPage) {
+        if (existingMemberIdToRow[member.id]) {
+          existingMembersToUpdate.push({
+            member: member,
+            rowNumber: existingMemberIdToRow[member.id]
+          });
+        } else {
+          newMembers.push(member);
+        }
+      }
+
+      // Update existing members from browse data (no attribution fetch)
+      if (existingMembersToUpdate.length > 0) {
+        Logger.log(`Updating ${existingMembersToUpdate.length} existing members`);
+        for (const item of existingMembersToUpdate) {
+          const row = memberToRow(item.member, syncStartTime, null);
+          sheet.getRange(item.rowNumber, 1, 1, row.length).setValues([row]);
+          membersSynced++;
+        }
+      }
+
+      // Add new members
+      if (newMembers.length > 0) {
+        Logger.log(`Adding ${newMembers.length} new members`);
+        const rows = [];
+
+        for (const member of newMembers) {
+          let memberData = member;
+          let attributionTimestamp = null;
+
+          // Fetch attribution data if enabled
+          if (settings.includeAttribution) {
+            const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
+            if (fullMember) {
+              memberData = fullMember;
+              attributionTimestamp = syncStartTime;
+            }
+          }
+
+          rows.push(memberToRow(memberData, syncStartTime, attributionTimestamp));
+        }
+
+        if (rows.length > 0) {
+          const lastRow = sheet.getLastRow();
+          const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
+          sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
+          membersSynced += rows.length;
+          Logger.log(`Wrote ${rows.length} new member rows at row ${nextRow}, total: ${membersSynced}`);
+        }
       }
     }
 
-    // Batch write rows
-    if (rows.length > 0) {
-      const lastRow = sheet.getLastRow();
-      const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
-      sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
-      membersSynced += rows.length;
-      Logger.log(`Wrote ${rows.length} rows at row ${nextRow}, total: ${membersSynced}`);
-
-      updateStatusRow(`Synced ${membersSynced} members...`);
-      SpreadsheetApp.flush();
-    }
+    updateStatusRow(`Synced ${membersSynced} members...`);
+    SpreadsheetApp.flush();
 
     afterId = membersPage[membersPage.length - 1].id;
     hasMore = membersPage.length === MEMBERS_PAGE_SIZE;
@@ -716,18 +795,18 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   }
 
   // Only get this far if we have processed every page of members and still have a little time left
-  // Remove members no longer in Ghost (rows with stale Last Synced timestamps)
+  // Remove members no longer in Ghost (rows with stale Last Sync Member timestamps)
   let removedCount = 0;
   if (!isFullUpdate && sheet.getLastRow() > HEADER_ROW) {
     Logger.log('Checking for removed members');
-    const lastSyncedColumnIndex = GHOST_HEADERS.indexOf('Last Synced') + 1;
-    const sheetData = sheet.getRange(DATA_START_ROW, lastSyncedColumnIndex, sheet.getLastRow() - HEADER_ROW, 1).getValues();
+    const lastSyncMemberColumnIndex = GHOST_HEADERS.indexOf('Last Sync Member') + 1;
+    const sheetData = sheet.getRange(DATA_START_ROW, lastSyncMemberColumnIndex, sheet.getLastRow() - HEADER_ROW, 1).getValues();
     const rowsToDelete = [];
     const syncStartTimeIso = new Date(syncStartTime).toISOString();
 
     for (let i = 0; i < sheetData.length; i++) {
-      const lastSyncedValue = sheetData[i][0];
-      if (lastSyncedValue && lastSyncedValue < syncStartTimeIso) {
+      const lastSyncMemberValue = sheetData[i][0];
+      if (lastSyncMemberValue && lastSyncMemberValue < syncStartTimeIso) {
         rowsToDelete.push(i + DATA_START_ROW);
       }
     }
@@ -751,10 +830,11 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
 
   const lastSyncTime = new Date().toLocaleString();
   const statusMsg = !isFullUpdate && removedCount > 0
-    ? `Sync Complete. Synced ${membersSynced}, removed ${removedCount} | Last ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`
-    : `Sync Complete. Synced ${membersSynced} members | Last ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`;
+    ? `Synced ${membersSynced}, removed ${removedCount}. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`
+    : `Synced ${membersSynced} members. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`;
 
   updateStatusRow(statusMsg);
+  sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
 }
 
 // ============================================
