@@ -9,7 +9,7 @@ Sync your Ghost members list to Google Sheets for analysis, reporting, and build
 3. Delete any existing code in the editor
 4. **Copy and paste** the entire contents of `GhostMembersSync.gs`
 5. Click **Save** (disk icon or Ctrl/Cmd+S)
-6. **Refresh your spreadsheet** - you should see a new "👻 Ghost Sync" menu
+6. **Reload your spreadsheet** - you should see a new "👻 Ghost Sync" menu
 
 ### First Run: Authorization
 
@@ -56,10 +56,6 @@ Your Ghost Admin API Key gives full administrative access to your Ghost site (re
 - Create separate analysis sheets that reference the Ghost Members sheet for untrusted users
 - If the API key is compromised, revoke it in Ghost Admin → Settings → Integrations and create a new one
 
-**Sheet Protection:**
-- Sheet is protected with "warning on edit" to prevent accidental column deletion
-- Status and header rows frozen for easier navigation
-
 ## Using the Sync
 
 ### Full Update
@@ -75,21 +71,10 @@ Your Ghost Admin API Key gives full administrative access to your Ghost site (re
 ### Quick Update
 **Ghost Sync → Quick Update**
 
-- Once you've completed at least one Full Update, you can use this to make subsequent updates faster
-- Removes members deleted from Ghost
-- Faster - only fetches browse endpoint data (no individual member calls)
-- Use this for routine updates
+- Only fetches attribution data from new members instead of all members.
+- Same as Full Update if you are not syncing attribution.
+- Must complete at least one Full Update first.
 
-
-
-### Time Management
-
-Large member lists are automatically split across multiple runs:
-- Each run processes for ~4.5 minutes (Google Apps Script has a 6-minute limit)
-- Progress is saved between runs
-- Sync automatically resumes after 1 minute
-- Status row shows progress: "On hold after syncing X members and will resume in 1 minute..."
-- Use **Cancel Update** to stop a multi-run sync if needed
 
 ## Working with Your Data
 
@@ -121,19 +106,31 @@ Find members with specific label:
 
 ### How It Works
 
+This script handles Google Apps Script's 6-minute execution time limit by breaking large sync operations into smaller chunks that can resume automatically:
+
 1. **Authentication**: Generates JWT tokens using Ghost's Admin API Key (HMAC-SHA256 signed)
 2. **Pagination**: Fetches members in pages of 100, ordered by ID ascending
-3. **State Management**: Saves progress to Script Properties between runs to handle execution time limits
-4. **Continuation Triggers**: Creates time-based triggers to resume long syncs automatically
-5. **Row Tracking**: Uses `Last Sync Member` timestamp to identify stale rows for removal
+3. **Continuation Pass Style**: When approaching the time limit, the script saves its state:
+   - Stores current page position, last member processed, and sync mode
+   - Sets up a time-based trigger to automatically resume after 1-2 minutes
+   - The continuation trigger runs `continueSyncFromTrigger()` to pick up exactly where it left off
+4. **State Management**: Saves sync state to these Script Properties:
+   - `syncMode`: "fullUpdate" or "quickUpdate"
+   - `currentPage`: Current page number being processed
+   - `lastMemberId`: ID of last member successfully processed
+   - `includeAttribution`: Whether attribution data is being fetched
+   - `existingMemberIds`: Map of member IDs for quick updates (stored during first run)
+   - `lastSyncTime`: Timestamp of the last sync operation
+5. **Automatic Cleanup**: After successful completion, continuation triggers are automatically removed
+6. **Row Tracking**: Uses `Last Sync Member` timestamp to identify stale rows for removal
 
 ### Data Flow
 
 **Full Update:**
-- Clear sheet → Setup headers → Fetch all members → Optional: fetch attribution per member → Write to sheet
+- Clear sheet → Setup headers → Start pagination → Process 100 members/page → Save state & create continuation trigger when near time limit → Continue from trigger → Repeat until all members processed → Optional: fetch attribution per member → Write to sheet → Clean up continuation triggers
 
 **Quick Update:**
-- Build existing member ID map → Fetch members page by page → Update existing rows in-place → Append new members → Remove stale rows
+- Build existing member ID map → Start pagination → Process 100 members/page → Update existing rows in-place → Append new members → Save state & create continuation trigger when near time limit → Continue from trigger → Repeat until all members processed → Remove stale rows → Clean up continuation triggers
 
 ### Synced Fields
 
@@ -155,30 +152,20 @@ Find members with specific label:
 - 10ms delay between API requests to avoid overwhelming server
 - Automatic retry on 429 (rate limit) with exponential backoff: 2s, 4s, 8s, 16s, 32s
 - Up to 5 retry attempts before failing
-- Ghost Admin API generally allows ~1000 requests/minute
+- Ghost Admin API rate limiting depends on your hosting set up
 
 ### Security
 
-**Minimal Permissions:**
-- `@OnlyCurrentDoc`: Only accesses the current spreadsheet (not all your Google Sheets)
-- No persistent background triggers or auto-sync
-- All syncs are user-initiated
-
-**Credentials Storage:**
-- Ghost URL and Admin API Key stored in Document Properties (scoped to this spreadsheet)
-- Properties are stored encrypted on Google's servers
-- JWT tokens generated on-demand and expire in 5 minutes
-- Admin API Key never leaves Google's infrastructure
-
-
+- Ghost URL and Admin API Key stored in the hidden properties of the spreadsheet
+- This script does not save or transmit member data anywhere besides in this spreadsheet
+- Anyone with Editor access to the spreadsheet could extract the API Key with a little work
 
 ### Limitations
 
 - **Execution Time**: Google Apps Script has 6-minute limit per execution (chunked processing handles this)
 - **Quota**: Google Apps Script free tier: 90 minutes/day runtime limit
 - **Attribution Cost**: Including attribution requires one API call per member (significantly slower)
-- **API Version**: Uses Ghost Admin API v5.0
-- **No Real-Time Sync**: Manual updates only (no webhooks or automatic scheduling)
+- **No Real-Time Sync**: Batch updates only (no webhooks)
 
 ### Ghost API Notes
 
@@ -194,22 +181,7 @@ Find members with specific label:
 
 ## Troubleshooting
 
-**"Invalid Admin API Key format"**
-- Ensure key includes colon separator: `id:secret`
-- Copy the full key from Ghost Admin
-
-**"API returned status code 401"**
-- API key may be invalid or revoked
-- Verify the key in Ghost Admin → Settings → Integrations
-
-**"Quick Update Not Available"**
-- Sheet structure doesn't match expected columns
-- Run a Full Update to recreate the sheet
-
-**Sync stops mid-process:**
-- Check Script Properties weren't manually cleared
-- Look for continuation triggers: can manually run `continueSyncFromTrigger()` if needed
-- Use Cancel Update to clear state and start fresh
+**Sync seems stuck for a really long time:** Use Cancel Update from menu to clear state, then run a Full Update
 
 **View detailed logs:** Extensions → Apps Script, then click **Execution log** at the top of the editor
 

@@ -14,9 +14,10 @@ const GHOST_HEADERS = [
   'Created At', 'Updated At', 'Email Open Rate', 'Email Opened Count',
   'Email Count', 'Note', 'Email Suppressed', 'Labels', 'Newsletters',
   'Tiers', 'Subscriptions', 'Stripe Customer ID', 'Complimentary Plan',
-  'Geolocation', 'Attribution ID', 'Attribution URL', 'Attribution Type',
+  'Geolocation', 'Unsubscribe URL', 'Last Seen At', 'Last Sync Member',
+  'Attribution ID', 'Attribution URL', 'Attribution Type',
   'Attribution Title', 'Referrer Source', 'Referrer Medium', 'Referrer URL',
-  'Unsubscribe URL', 'Last Seen At', 'Last Sync Member', 'Last Sync Attribution'
+  'Last Sync Attribution'
 ];
 
 const MEMBERS_PAGE_SIZE = 100;
@@ -219,28 +220,46 @@ function makeApiCall(url, options) {
   const maxRetries = 5;
   let backoffMs = 2000;
 
+  options = options || {};
+  options.muteHttpExceptions = true;
+
   while (retryCount <= maxRetries) {
     if (retryCount === 0 && API_REQUEST_DELAY_MS > 0) {
+      // this is the delay between each new API request (usually very short)
       Utilities.sleep(API_REQUEST_DELAY_MS);
     }
 
-    const response = UrlFetchApp.fetch(url, options);
-    const responseCode = response.getResponseCode();
+    let rateLimited = false;
 
-    if (responseCode >= 200 && responseCode < 300) {
-      return response;
-    }
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const responseCode = response.getResponseCode();
 
-    retryCount++;
+      if (responseCode >= 200 && responseCode < 300) {
+        return response;
+      }
 
-    if (retryCount > maxRetries) {
+      if (responseCode === 429) {
+        rateLimited = true;
+      }
+
       const responseText = response.getContentText();
       throw new Error(`API returned status code: ${responseCode} - ${responseText}`);
-    }
 
-    if (responseCode === 429) {
-      Utilities.sleep(backoffMs);
-      backoffMs *= 2;
+    } catch (e) {
+      Logger.log(`API call failed (attempt ${retryCount + 1}/${maxRetries + 1}): ${e.message}`);
+
+      retryCount++;
+
+      if (retryCount > maxRetries) {
+        throw e;
+      }
+
+      if (rateLimited) {
+        // only do the extra sleep on 429
+        Utilities.sleep(backoffMs);
+        backoffMs *= 2;
+      }
     }
   }
 }
@@ -289,9 +308,11 @@ function clearState() {
 function createContinuationTrigger() {
   deleteContinuationTriggers();
 
+  // make a trigger for just slightly in the future for the next batch
+  // (seems like Google effectively makes it 1min minmum any way)
   ScriptApp.newTrigger('continueSyncFromTrigger')
     .timeBased()
-    .after(1 * 60 * 1000)
+    .after(100)
     .create();
 }
 
@@ -387,51 +408,43 @@ function setupSheet() {
   // Freeze status row and header row
   sheet.setFrozenRows(2);
 
-  // Remove any existing protections
-  const sheetProtections = sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET);
-  for (const protection of sheetProtections) {
-    protection.remove();
-  }
 }
 
 function updateStatusRow(message) {
   const sheet = getOrCreateSheet();
 
-  // Merge columns for better formatting (start at column 2 to preserve spinner in column 1)
   const statusCell = sheet.getRange(STATUS_ROW, 2, 1, 19);
 
-  statusCell
-    .merge()
-    .setValue(message)
-    .setVerticalAlignment('middle')
-    .setFontColor('#856404')
-    .setFontWeight('bold')
-    .setBackground('#98FB98');
+  // Check if already merged, if not set up formatting
+  if (!statusCell.isPartOfMerge()) {
+    statusCell
+      .merge()
+      .setVerticalAlignment('middle')
+      .setFontColor('#856404')
+      .setFontWeight('bold')
+      .setBackground('#98FB98');
+  }
+
+  statusCell.setValue(message);
 
   SpreadsheetApp.flush();
 }
 
 function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = null) {
-  // Get nested objects with fallback
   const attribution = member.attribution || {};
 
-  // Helper function to safely map and join arrays
   const mapAndJoin = (arr, key = 'name') => (arr && Array.isArray(arr))
     ? arr.map(item => item[key]).join(', ') : '';
 
-  // Extract array fields with proper formatting
   const labels = mapAndJoin(member.labels) || '';
   const newsletters = mapAndJoin(member.newsletters) || '';
   const tiers = mapAndJoin(member.tiers) || '';
   const subscriptions = mapAndJoin(member.subscriptions, 'status') || '';
 
-  // Handle email_suppression: show info if suppressed=true, otherwise "No"
   const emailSuppression = (member.email_suppression && member.email_suppression.suppressed === true)
     ? member.email_suppression.info : 'No';
 
-  // Build the row data object first for clarity
   const rowData = [
-    // Basic member info
     member.id || '',
     member.uuid || '',
     member.email || '',
@@ -439,13 +452,9 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
     member.status || '',
     member.created_at || '',
     member.updated_at || '',
-
-    // Email metrics
     member.email_open_rate || '',
     member.email_opened_count || '',
     member.email_count || '',
-
-    // Additional info
     member.note || '',
     emailSuppression,
     labels,
@@ -455,22 +464,24 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
     member.stripe_customer_id || '',
     member.comped ? 'Yes' : 'No',
     member.geolocation || '',
-
-    // Attribution data
-    attribution.id || '',
-    attribution.url || '',
-    attribution.type || '',
-    attribution.title || '',
-    attribution.referrer_source || '',
-    attribution.referrer_medium || '',
-    attribution.referrer_url || '',
-
-    // Tracking
     member.unsubscribe_url || '',
     member.last_seen_at || '',
-    new Date(memberSyncTimestamp).toISOString(),
-    attributionSyncTimestamp ? new Date(attributionSyncTimestamp).toISOString() : ''
+    new Date(memberSyncTimestamp).toISOString()
   ];
+
+  // Include attribution data only if we fetched it
+  if (attributionSyncTimestamp !== null) {
+    rowData.push(
+      attribution.id || '',
+      attribution.url || '',
+      attribution.type || '',
+      attribution.title || '',
+      attribution.referrer_source || '',
+      attribution.referrer_medium || '',
+      attribution.referrer_url || '',
+      new Date(attributionSyncTimestamp).toISOString()
+    );
+  }
 
   return rowData;
 }
@@ -627,6 +638,7 @@ function showSpinner() {
     .setHeight(16)
     .setWidth(16)
     .setAltTextTitle(SPINNER_ALT_TITLE);
+  SpreadsheetApp.flush();
 }
 
 function hideSpinner() {
@@ -660,13 +672,13 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
 
   let existingMemberIdToRow = {};
 
-  // For quick update on first run, build map of existing IDs to row numbers
+  // For quick update on first run, build map of member IDs to row numbers
   if (!isFullUpdate && !lastProcessedId && sheet.getLastRow() > HEADER_ROW) {
     updateStatusRow('Checking existing members...');
-    const existingData = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, 1).getValues();
-    for (let i = 0; i < existingData.length; i++) {
-      if (existingData[i][0]) {
-        existingMemberIdToRow[existingData[i][0]] = i + DATA_START_ROW;
+    const memberIds = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, 1).getValues();
+    for (let i = 0; i < memberIds.length; i++) {
+      if (memberIds[i][0]) {
+        existingMemberIdToRow[memberIds[i][0]] = i + DATA_START_ROW;
       }
     }
     Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
@@ -728,41 +740,36 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
       }
 
     } else {
-      // Quick update: update existing members, add new ones
+      // Quick update: update all from browse data, fetch attribution only for new members
+      const existingMembers = [];
       const newMembers = [];
-      const existingMembersToUpdate = [];
 
       for (const member of membersPage) {
         if (existingMemberIdToRow[member.id]) {
-          existingMembersToUpdate.push({
-            member: member,
-            rowNumber: existingMemberIdToRow[member.id]
-          });
+          existingMembers.push(member);
         } else {
           newMembers.push(member);
         }
       }
 
-      // Update existing members from browse data (no attribution fetch)
-      if (existingMembersToUpdate.length > 0) {
-        Logger.log(`Updating ${existingMembersToUpdate.length} existing members`);
-        for (const item of existingMembersToUpdate) {
-          const row = memberToRow(item.member, syncStartTime, null);
-          sheet.getRange(item.rowNumber, 1, 1, row.length).setValues([row]);
-          membersSynced++;
-        }
+      // Update existing members with browse data only (no attribution fetch)
+      for (const member of existingMembers) {
+        const rowNumber = existingMemberIdToRow[member.id];
+        const row = memberToRow(member, syncStartTime, null);
+        sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+        membersSynced++;
+      }
+      if (existingMembers.length > 0) {
+        Logger.log(`Updated ${existingMembers.length} existing members`);
       }
 
-      // Add new members
+      // Add new members with attribution fetch
       if (newMembers.length > 0) {
-        Logger.log(`Adding ${newMembers.length} new members`);
         const rows = [];
-
         for (const member of newMembers) {
           let memberData = member;
           let attributionTimestamp = null;
 
-          // Fetch attribution data if enabled
           if (settings.includeAttribution) {
             const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
             if (fullMember) {
@@ -774,13 +781,11 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
           rows.push(memberToRow(memberData, syncStartTime, attributionTimestamp));
         }
 
-        if (rows.length > 0) {
-          const lastRow = sheet.getLastRow();
-          const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
-          sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
-          membersSynced += rows.length;
-          Logger.log(`Wrote ${rows.length} new member rows at row ${nextRow}, total: ${membersSynced}`);
-        }
+        const lastRow = sheet.getLastRow();
+        const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
+        sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
+        membersSynced += rows.length;
+        Logger.log(`Added ${rows.length} new members`);
       }
     }
 
@@ -827,6 +832,9 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   hideSpinner();
 
   sheet.autoResizeColumns(1, sheet.getLastColumn());
+  // Resize down some long columns
+  sheet.setColumnWidth(GHOST_HEADERS.indexOf('Geolocation') + 1, 100);
+  sheet.setColumnWidth(GHOST_HEADERS.indexOf('Unsubscribe URL') + 1, 100);
 
   const lastSyncTime = new Date().toLocaleString();
   const statusMsg = !isFullUpdate && removedCount > 0
