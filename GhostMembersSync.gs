@@ -20,7 +20,7 @@ const GHOST_HEADERS = [
 ];
 
 const MEMBERS_PAGE_SIZE = 100;
-const MAX_EXECUTION_TIME = 4 * 60 * 1000; // 4 minutes (leaving 1-minute safety buffer)
+const MAX_EXECUTION_TIME = 5 * 60 * 1000; // 5 minutes (leaving 1-minute safety buffer)
 
 
 
@@ -273,7 +273,8 @@ function fetchMembersPage(ghostUrl, adminApiKey, afterId = null) {
   let url = `${ghostUrl}/ghost/api/admin/members/?limit=${MEMBERS_PAGE_SIZE}&order=id ASC`;
 
   if (afterId) {
-    url += `&filter=id:>'${afterId}'`;
+    const filter = `id:>'${afterId}'`;
+    url += `&filter=${encodeURIComponent(filter)}`;
   }
 
   const response = makeApiCall(url, {
@@ -499,9 +500,12 @@ function continueSyncFromTrigger() {
   const state = loadState();
 
   if (!state) {
+    Logger.log('No continuation state found, skipping');
     deleteContinuationTriggers();
     return;
   }
+
+  Logger.log(`Resuming sync: afterId=${state.lastProcessedId}, synced=${state.membersSynced}, isFullUpdate=${state.isFullUpdate}`);
 
   try {
     processMembersSync(state.isFullUpdate, state.lastProcessedId, state.membersSynced);
@@ -561,6 +565,8 @@ function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
   const startTime = Date.now();
   const updateType = isFullUpdate ? 'Full Update' : 'Quick Update';
 
+  Logger.log(`Starting ${updateType}: lastProcessedId=${lastProcessedId || 'null'}, membersSynced=${membersSynced}`);
+
   let existingMemberIds = {};
 
   // For quick update on first run, build set of existing IDs
@@ -570,6 +576,7 @@ function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
     for (const row of existingData) {
       if (row[0]) existingMemberIds[row[0]] = true;
     }
+    Logger.log(`Quick update: found ${Object.keys(existingMemberIds).length} existing member IDs`);
   }
 
   let hasMore = true;
@@ -578,10 +585,11 @@ function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
   while (hasMore) {
     // Check if we're approaching time limit
     if (Date.now() - startTime > MAX_EXECUTION_TIME) {
+      Logger.log(`Time limit reached: ${Date.now() - startTime}ms elapsed. Pausing at afterId=${afterId}, synced=${membersSynced}`);
       saveState(afterId, membersSynced, isFullUpdate);
       createContinuationTrigger();
       SpreadsheetApp.getActiveSpreadsheet().toast(
-        `⏸️ ${updateType} paused after ${membersSynced} members. Will resume automatically in 1-5 minutes...`,
+        `⏸️ ${updateType} paused after ${membersSynced} members. Will resume automatically in 1 minute...`,
         'Ghost Sync',
         10
       );
@@ -589,9 +597,12 @@ function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
     }
 
     // Fetch next page
+    Logger.log(`Fetching members page: afterId=${afterId || 'null'}`);
     const membersPage = fetchMembersPage(settings.ghostUrl, settings.adminApiKey, afterId);
+    Logger.log(`Received ${membersPage.length} members from Ghost API`);
 
     if (membersPage.length === 0) {
+      Logger.log('No more members to fetch, completing sync');
       hasMore = false;
       break;
     }
@@ -602,12 +613,14 @@ function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
       : membersPage.filter(m => !existingMemberIds[m.id]);
 
     if (membersToProcess.length === 0) {
+      Logger.log(`Skipping ${membersPage.length} existing members (quick update)`);
       afterId = membersPage[membersPage.length - 1].id;
       hasMore = membersPage.length === MEMBERS_PAGE_SIZE;
       continue;
     }
 
     // Fetch full details and build rows
+    Logger.log(`Processing ${membersToProcess.length} members`);
     const rows = [];
     for (const member of membersToProcess) {
       const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
@@ -621,6 +634,7 @@ function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
       const nextRow = sheet.getLastRow() + 1;
       sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
       membersSynced += rows.length;
+      Logger.log(`Wrote ${rows.length} rows to sheet at row ${nextRow}. Total synced: ${membersSynced}`);
 
       SpreadsheetApp.getActiveSpreadsheet().toast(
         `${updateType}: Synced ${membersSynced} members...`,
@@ -635,6 +649,7 @@ function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
   }
 
   // Cleanup on completion
+  Logger.log(`Sync complete: ${membersSynced} members synced in ${Date.now() - startTime}ms`);
   clearState();
   deleteContinuationTriggers();
 
