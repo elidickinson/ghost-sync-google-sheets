@@ -19,6 +19,9 @@ const GHOST_HEADERS = [
   'Unsubscribe URL', 'Last Seen At'
 ];
 
+const MEMBERS_PAGE_SIZE = 100;
+const MAX_EXECUTION_TIME = 4 * 60 * 1000; // 4 minutes (leaving 1-minute safety buffer)
+
 
 
 // ============================================
@@ -171,38 +174,145 @@ function generateToken(adminApiKey) {
   return unsigned + '.' + signatureEncoded;
 }
 
+/**
+ * Helper function to make API calls with retry logic for rate limiting
+ * @param {string} url - The API URL to call
+ * @param {Object} options - Options for the UrlFetchApp.fetch call
+ * @returns {HTTPResponse} The successful response object
+ * @throws {Error} If all retries fail
+ */
+function makeApiCall(url, options) {
+  let retryCount = 0;
+  let backoffMs = 2000;
+  
+  while (true) {
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      const responseCode = response.getResponseCode();
+      
+      if (responseCode >= 200 && responseCode < 300) {
+        return response;
+      }
+      
+      if (responseCode === 429) {
+        if (retryCount >= 5) {
+          throw new Error('Rate limited after 5 retries');
+        }
+        Utilities.sleep(backoffMs);
+        backoffMs *= 2;
+        retryCount++;
+        continue;
+      }
+      
+      const responseText = response.getContentText();
+      throw new Error(`API returned status code: ${responseCode} - ${responseText}`);
+    } catch (e) {
+      if (e.message && e.message.includes('429')) {
+        if (retryCount >= 5) {
+          throw new Error('Rate limited after 5 retries');
+        }
+        Utilities.sleep(backoffMs);
+        backoffMs *= 2;
+        retryCount++;
+        continue;
+      }
+      throw e;
+    }
+  }
+}
+
 function base64UrlEncode(data) {
   const encoded = Utilities.base64Encode(data);
   return encoded.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 // ============================================
+// STATE MANAGEMENT
+// ============================================
+
+const STATE_KEY_PREFIX = 'GHOST_SYNC_STATE_';
+
+function saveState(lastProcessedId, membersSynced, isFullUpdate) {
+  const props = PropertiesService.getScriptProperties();
+  props.setProperty(STATE_KEY_PREFIX + 'LAST_ID', lastProcessedId || '');
+  props.setProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT', membersSynced.toString());
+  props.setProperty(STATE_KEY_PREFIX + 'IS_FULL_UPDATE', isFullUpdate.toString());
+}
+
+function loadState() {
+  const props = PropertiesService.getScriptProperties();
+  const lastId = props.getProperty(STATE_KEY_PREFIX + 'LAST_ID');
+  
+  if (!lastId && lastId !== '') return null;
+  
+  return {
+    lastProcessedId: lastId || null,
+    membersSynced: parseInt(props.getProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT')) || 0,
+    isFullUpdate: props.getProperty(STATE_KEY_PREFIX + 'IS_FULL_UPDATE') === 'true'
+  };
+}
+
+function clearState() {
+  const props = PropertiesService.getScriptProperties();
+  props.deleteProperty(STATE_KEY_PREFIX + 'LAST_ID');
+  props.deleteProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT');
+  props.deleteProperty(STATE_KEY_PREFIX + 'IS_FULL_UPDATE');
+}
+
+function createContinuationTrigger() {
+  deleteContinuationTriggers();
+  
+  ScriptApp.newTrigger('continueSyncFromTrigger')
+    .timeBased()
+    .after(1 * 60 * 1000)
+    .create();
+}
+
+function deleteContinuationTriggers() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'continueSyncFromTrigger') {
+      ScriptApp.deleteTrigger(trigger);
+    }
+  }
+}
+
+// ============================================
 // GHOST API
 // ============================================
 
-function fetchAllMembers(ghostUrl, adminApiKey) {
+function fetchMembersPage(ghostUrl, adminApiKey, afterId = null) {
   const token = generateToken(adminApiKey);
+  let url = `${ghostUrl}/ghost/api/admin/members/?limit=${MEMBERS_PAGE_SIZE}&order=id ASC`;
+  
+  if (afterId) {
+    url += `&filter=id:>'${afterId}'`;
+  }
+
+  const response = makeApiCall(url, {
+    method: 'get',
+    headers: {
+      'Authorization': `Ghost ${token}`,
+      'Accept-Version': 'v5.0'
+    }
+  });
+
+  const data = JSON.parse(response.getContentText());
+  return data.members || [];
+}
+
+function fetchAllMembers(ghostUrl, adminApiKey) {
   let allMembers = [];
-  let page = 1;
+  let afterId = null;
   let hasMore = true;
 
   while (hasMore) {
-    const url = `${ghostUrl}/ghost/api/admin/members/?limit=100&page=${page}`;
-
-    const response = UrlFetchApp.fetch(url, {
-      method: 'get',
-      headers: {
-        'Authorization': `Ghost ${token}`,
-        'Accept-Version': 'v5.0'
-      }
-    });
-
-    const data = JSON.parse(response.getContentText());
-
-    if (data.members && data.members.length > 0) {
-      allMembers = allMembers.concat(data.members);
-      hasMore = data.meta && data.meta.pagination && page < data.meta.pagination.pages;
-      page++;
+    const members = fetchMembersPage(ghostUrl, adminApiKey, afterId);
+    
+    if (members.length > 0) {
+      allMembers = allMembers.concat(members);
+      afterId = members[members.length - 1].id;
+      hasMore = members.length === MEMBERS_PAGE_SIZE;
     } else {
       hasMore = false;
     }
@@ -215,7 +325,7 @@ function fetchMemberById(ghostUrl, adminApiKey, memberId) {
   const token = generateToken(adminApiKey);
   const url = `${ghostUrl}/ghost/api/admin/members/${memberId}/?include=newsletters,tiers`;
 
-  const response = UrlFetchApp.fetch(url, {
+  const response = makeApiCall(url, {
     method: 'get',
     headers: {
       'Authorization': `Ghost ${token}`,
@@ -395,11 +505,32 @@ function fullUpdateWithUI() {
 }
 
 // ============================================
+// CONTINUATION FUNCTION
+// ============================================
+
+function continueSyncFromTrigger() {
+  const state = loadState();
+  
+  if (!state) {
+    deleteContinuationTriggers();
+    return;
+  }
+  
+  try {
+    processMembersSync(state.isFullUpdate, state.lastProcessedId, state.membersSynced);
+  } catch (e) {
+    Logger.log(`Continuation error: ${e.message}`);
+    clearState();
+    deleteContinuationTriggers();
+    throw e;
+  }
+}
+
+// ============================================
 // SYNC FUNCTION
 // ============================================
 
 function syncMembersWithUI(isFullUpdate) {
-  const ui = SpreadsheetApp.getUi();
   const settings = getSettings();
 
   if (!settings.ghostUrl || !settings.adminApiKey) {
@@ -415,110 +546,125 @@ function syncMembersWithUI(isFullUpdate) {
       setupSheet();
     }
 
-    const updateType = isFullUpdate ? 'Full Update' : 'Quick Update';
-    SpreadsheetApp.getActiveSpreadsheet().toast(`🔄 ${updateType}: Fetching members list...`, 'Ghost Sync', 10);
-
-    // Fetch all members list
-    const membersList = fetchAllMembers(settings.ghostUrl, settings.adminApiKey);
-
-    if (membersList.length === 0) {
-      SpreadsheetApp.getActiveSpreadsheet().toast('ℹ️ No members found in Ghost', 'Ghost Sync', 5);
-      return;
-    }
-
-    let existingMemberIds = {};
-
-    // For Quick Update, get existing member IDs
-    if (!isFullUpdate && sheet.getLastRow() > 1) {
-      SpreadsheetApp.getActiveSpreadsheet().toast(`⚡ Quick Update: Checking existing members...`, 'Ghost Sync', 5);
-      const existingDataRange = sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn());
-      const existingData = existingDataRange.getValues();
-
-      // Member ID is in column 1 (index 0)
-      for (let i = 0; i < existingData.length; i++) {
-        const memberId = existingData[i][0];
-        if (memberId) {
-          existingMemberIds[memberId] = true;
-        }
-      }
-    }
-
-    // Filter to get only new members for quick update
-    let newMembersList = [];
-    if (isFullUpdate) {
-      newMembersList = membersList;
-    } else {
-      for (let i = 0; i < membersList.length; i++) {
-        if (!existingMemberIds[membersList[i].id]) {
-          newMembersList.push(membersList[i]);
-        }
-      }
-
-      if (newMembersList.length === 0) {
-        SpreadsheetApp.getActiveSpreadsheet().toast('ℹ️ No new members to sync', 'Ghost Sync', 5);
-        return;
-      }
-    }
-
     // For full update, clear existing data
     if (isFullUpdate && sheet.getLastRow() > 1) {
-      SpreadsheetApp.getActiveSpreadsheet().toast(`🔄 Full Update: Clearing existing data...`, 'Ghost Sync', 5);
+      SpreadsheetApp.getActiveSpreadsheet().toast('🔄 Full Update: Clearing existing data...', 'Ghost Sync', 5);
       sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clear();
     }
 
-    // Fetch full details for new members and update sheet as we go
-    let membersCount = 0;
-    const totalToFetch = newMembersList.length;
-    let startRow = isFullUpdate ? 2 : sheet.getLastRow() + 1;
-
-    for (let i = 0; i < totalToFetch; i++) {
-      // Update progress every 10 members or at the end
-      if (i % 20 === 0 || i === totalToFetch - 1) {
-        const progressMessage = `${updateType}: Syncing ${i+1}/${totalToFetch} members...`;
-        SpreadsheetApp.getActiveSpreadsheet().toast(progressMessage, 'Ghost Sync', 5);
-
-        // Force the UI to update by using a small flush
-        SpreadsheetApp.flush();
-      }
-
-      const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, newMembersList[i].id);
-
-       if (fullMember) {
-        // Convert member to row and immediately add to sheet
-        const row = memberToRow(fullMember);
-        if (row.length > 0) {
-          sheet.getRange(startRow + i, 1, 1, row.length).setValues([row]);
-          membersCount++;
-
-        }
-      } else {
-        // Log when a member is skipped
-        Logger.log(`Skipping member at index ${i}: ID ${newMembersList[i].id}`);
-      }
-    }
-
-    // Format
-    sheet.autoResizeColumns(1, sheet.getLastColumn());
-
-    // Add timestamp as note on first cell
-    const lastSyncTime = new Date().toString();
-    const currentNote = sheet.getRange('A1').getNote() || '';
-    const newNote = isFullUpdate
-      ? `Last full sync: ${lastSyncTime}`
-      : `Last quick sync: ${lastSyncTime}\n${currentNote}`;
-
-    sheet.getRange('A1').setNote(newNote);
-
-    SpreadsheetApp.getActiveSpreadsheet().toast(`✅ ${updateType} complete! Synced ${membersCount} members`, 'Ghost Sync', 5);
+    // Clear any previous state and start fresh
+    clearState();
+    deleteContinuationTriggers();
+    
+    processMembersSync(isFullUpdate, null, 0);
 
   } catch (e) {
     Logger.log(`Sync error: ${e.message}`);
-    ui.alert(
+    SpreadsheetApp.getUi().alert(
       '❌ Sync Failed',
       `Error: ${e.message}\n\nCheck View → Logs for details.`,
-      ui.ButtonSet.OK
+      SpreadsheetApp.getUi().ButtonSet.OK
     );
   }
+}
+
+function processMembersSync(isFullUpdate, lastProcessedId, membersSynced) {
+  const settings = getSettings();
+  const sheet = getOrCreateSheet();
+  const startTime = Date.now();
+  const updateType = isFullUpdate ? 'Full Update' : 'Quick Update';
+  
+  let existingMemberIds = {};
+  
+  // For quick update on first run, build set of existing IDs
+  if (!isFullUpdate && !lastProcessedId && sheet.getLastRow() > 1) {
+    SpreadsheetApp.getActiveSpreadsheet().toast('⚡ Quick Update: Checking existing members...', 'Ghost Sync', 5);
+    const existingData = sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getValues();
+    for (const row of existingData) {
+      if (row[0]) existingMemberIds[row[0]] = true;
+    }
+  }
+  
+  let hasMore = true;
+  let afterId = lastProcessedId;
+  
+  while (hasMore) {
+    // Check if we're approaching time limit
+    if (Date.now() - startTime > MAX_EXECUTION_TIME) {
+      saveState(afterId, membersSynced, isFullUpdate);
+      createContinuationTrigger();
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        `⏸️ ${updateType} paused after ${membersSynced} members. Will resume automatically in 1-5 minutes...`,
+        'Ghost Sync',
+        10
+      );
+      return;
+    }
+    
+    // Fetch next page
+    const membersPage = fetchMembersPage(settings.ghostUrl, settings.adminApiKey, afterId);
+    
+    if (membersPage.length === 0) {
+      hasMore = false;
+      break;
+    }
+    
+    // Filter for quick update
+    const membersToProcess = isFullUpdate 
+      ? membersPage 
+      : membersPage.filter(m => !existingMemberIds[m.id]);
+    
+    if (membersToProcess.length === 0) {
+      afterId = membersPage[membersPage.length - 1].id;
+      hasMore = membersPage.length === MEMBERS_PAGE_SIZE;
+      continue;
+    }
+    
+    // Fetch full details and build rows
+    const rows = [];
+    for (const member of membersToProcess) {
+      const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
+      if (fullMember) {
+        rows.push(memberToRow(fullMember));
+      }
+    }
+    
+    // Batch write rows
+    if (rows.length > 0) {
+      const nextRow = sheet.getLastRow() + 1;
+      sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
+      membersSynced += rows.length;
+      
+      SpreadsheetApp.getActiveSpreadsheet().toast(
+        `${updateType}: Synced ${membersSynced} members...`,
+        'Ghost Sync',
+        5
+      );
+      SpreadsheetApp.flush();
+    }
+    
+    afterId = membersPage[membersPage.length - 1].id;
+    hasMore = membersPage.length === MEMBERS_PAGE_SIZE;
+  }
+  
+  // Cleanup on completion
+  clearState();
+  deleteContinuationTriggers();
+  
+  sheet.autoResizeColumns(1, sheet.getLastColumn());
+  
+  const lastSyncTime = new Date().toString();
+  const currentNote = sheet.getRange('A1').getNote() || '';
+  const newNote = isFullUpdate
+    ? `Last full sync: ${lastSyncTime}`
+    : `Last quick sync: ${lastSyncTime}\n${currentNote}`;
+  sheet.getRange('A1').setNote(newNote);
+  
+  SpreadsheetApp.getActiveSpreadsheet().toast(
+    `✅ ${updateType} complete! Synced ${membersSynced} members`,
+    'Ghost Sync',
+    5
+  );
 }
 
 // ============================================
