@@ -10,7 +10,7 @@
 // ============================================
 
 const GHOST_HEADERS = [
-  'Member ID', 'UUID', 'Email', 'Name', 'Status', 'Subscribed',
+  'Member ID', 'UUID', 'Email', 'Name', 'Status',
   'Created At', 'Updated At', 'Email Open Rate', 'Email Opened Count',
   'Email Count', 'Note', 'Email Suppressed', 'Labels', 'Newsletters',
   'Tiers', 'Subscriptions', 'Stripe Customer ID', 'Complimentary Plan',
@@ -400,7 +400,6 @@ function memberToRow(member) {
     member.email || '',
     member.name || '',
     member.status || '',
-    member.subscribed ? 'Yes' : 'No',
     member.created_at || '',
     member.updated_at || '',
 
