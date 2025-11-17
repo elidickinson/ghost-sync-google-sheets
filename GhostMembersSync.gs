@@ -183,41 +183,27 @@ function generateToken(adminApiKey) {
  */
 function makeApiCall(url, options) {
   let retryCount = 0;
+  const maxRetries = 5;
   let backoffMs = 2000;
 
-  while (true) {
-    try {
-      const response = UrlFetchApp.fetch(url, options);
-      const responseCode = response.getResponseCode();
+  while (retryCount <= maxRetries) {
+    const response = UrlFetchApp.fetch(url, options);
+    const responseCode = response.getResponseCode();
 
-      if (responseCode >= 200 && responseCode < 300) {
-        return response;
-      }
+    if (responseCode >= 200 && responseCode < 300) {
+      return response;
+    }
 
-      if (responseCode === 429) {
-        if (retryCount >= 5) {
-          const responseText = response.getContentText();
-          throw new Error(`API returned status code: 429 - ${responseText}`);
-        }
-        Utilities.sleep(backoffMs);
-        backoffMs *= 2;
-        retryCount++;
-        continue;
-      }
+    retryCount++;
 
+    if (retryCount > maxRetries) {
       const responseText = response.getContentText();
       throw new Error(`API returned status code: ${responseCode} - ${responseText}`);
-    } catch (e) {
-      if (e.message && e.message.includes('429')) {
-        if (retryCount >= 5) {
-          throw e;
-        }
-        Utilities.sleep(backoffMs);
-        backoffMs *= 2;
-        retryCount++;
-        continue;
-      }
-      throw e;
+    }
+
+    if (responseCode === 429) {
+      Utilities.sleep(backoffMs);
+      backoffMs *= 2;
     }
   }
 }
