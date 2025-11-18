@@ -25,7 +25,7 @@ The first time you use any Ghost Sync function, Google will ask you to authorize
 5. Review the permissions:
    - **See, edit, create, and delete spreadsheet** - needed to write member data to this spreadsheet
    - **Connect to an external service** - needed to call Ghost API. Member data flows from the API to this spreadsheet and nowhere else.
-6. Click **Allow**
+6. Click **Select All** and continue
 
 You should only have to do this once.
 
