@@ -1,6 +1,6 @@
 # Ghost Members Sync for Google Sheets
 
-Sync your Ghost members list to Google Sheets for analysis, reporting, and building custom workflows on top of your membership data.
+Sync your Ghost members list to Google Sheets for analysis, reporting, and building custom workflows on top of your membership data. This includes the [hard to access](https://forum.ghost.org/t/provide-source-in-member-api-csv/52412) attribution/referral fields.
 
 ## Installation
 
