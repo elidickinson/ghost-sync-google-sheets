@@ -21,7 +21,7 @@ The first time you use any Ghost Sync function, Google will ask you to authorize
 4. You'll see a warning: **"Google hasn't verified this app"**
    - This is normal - it's your own script, not a published app reviewed by Google
    - Click **Advanced** (bottom left)
-   - Click **"Go to Ghost Members Sync (unsafe)"**
+   - Click **"Go to Your Sheet Name (unsafe)"**
 5. Review the permissions:
    - **See, edit, create, and delete spreadsheet** - needed to write member data to this spreadsheet
    - **Connect to an external service** - needed to call Ghost API. Member data flows from the API to this spreadsheet and nowhere else.
