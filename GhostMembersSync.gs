@@ -408,28 +408,10 @@ function dailyQuickUpdate() {
   const settings = getSettings();
 
   if (!settings.ghostUrl || !settings.adminApiKey) {
-    return; // Skip if not configured
+    return;
   }
 
-  const sheet = getOrCreateSheet();
-
-  // If attribution is off, Quick Update has no advantage - just do Full Update
-  if (!settings.includeAttribution) {
-    sheet.clear();
-    setupSheet();
-    clearState();
-    deleteContinuationTriggers();
-    processMembersSync(true); // Full update
-  } else {
-    // Quick update: setup headers if needed
-    if (sheet.getLastRow() < HEADER_ROW) {
-      setupSheet();
-    }
-
-    clearState();
-    deleteContinuationTriggers();
-    processMembersSync(false); // Quick update
-  }
+  startSync(false); // false = quick update (unless attribution is off)
 }
 
 // ============================================
@@ -687,6 +669,32 @@ function continueSyncFromTrigger() {
 // SYNC FUNCTION
 // ============================================
 
+/**
+ * Core sync logic shared by UI and trigger-based syncs
+ * Handles setup, determines if full update needed, and calls processMembersSync
+ */
+function startSync(isFullUpdate) {
+  const settings = getSettings();
+
+  // If attribution is off, Quick Update has no advantage - just do Full Update
+  if (!isFullUpdate && !settings.includeAttribution) {
+    isFullUpdate = true;
+  }
+
+  const sheet = getOrCreateSheet();
+
+  if (isFullUpdate) {
+    sheet.clear();
+    setupSheet();
+  } else if (sheet.getLastRow() < HEADER_ROW) {
+    setupSheet();
+  }
+
+  clearState();
+  deleteContinuationTriggers();
+  processMembersSync(isFullUpdate);
+}
+
 function syncMembersWithUI(isFullUpdate) {
   const settings = getSettings();
 
@@ -695,40 +703,20 @@ function syncMembersWithUI(isFullUpdate) {
     return;
   }
 
-  // If attribution is off, Quick Update has no advantage - just do Full Update
+  // Show appropriate message
   if (!isFullUpdate && !settings.includeAttribution) {
-    Logger.log('Attribution disabled - Quick Update redirecting to Full Update');
-    isFullUpdate = true;
     SpreadsheetApp.getActiveSpreadsheet().toast('Attribution is disabled so doing a Full Update...', 'Ghost Sync', 3);
   } else {
     SpreadsheetApp.getActiveSpreadsheet().toast('Preparing to update...', 'Ghost Sync', 3);
   }
 
   try {
-    const sheet = getOrCreateSheet();
-
-    if (isFullUpdate) {
-      // Full update: clear everything and setup fresh
-      sheet.clear();
-      setupSheet();
-    } else if (sheet.getLastRow() < HEADER_ROW) {
-      // Quick update: setup headers if needed
-      setupSheet();
-      SpreadsheetApp.getActiveSpreadsheet().toast('Sheet setup complete...', 'Ghost Sync', 3);
-    }
-
-    // Clear any previous state and start fresh
-    clearState();
-    deleteContinuationTriggers();
-
-    processMembersSync(isFullUpdate);
-
+    startSync(isFullUpdate);
   } catch (e) {
-    Logger.log(`Error: ${e.message}`);
     updateStatusRow(`❌ Sync Failed: ${e.message}`);
     SpreadsheetApp.getUi().alert(
       'Sync Failed',
-      `Error: ${e.message}\n\nCheck View → Logs for details.`,
+      `Error: ${e.message}\n\nCheck Extensions → Apps Script → Executions for details.`,
       SpreadsheetApp.getUi().ButtonSet.OK
     );
   }
