@@ -49,7 +49,7 @@ Note: Google will also send you an email alert that you added an unauthorized ap
 
 ### Daily Auto-Update
 **Ghost Sync → Setup Daily Auto-Update**
-- Automatically runs Quick Update once per day (between 1-4 AM)
+- Automatically runs Quick Update once per day at midnight
 - Requires at least one Full Update to be completed first
 - Perfect for keeping your sheet up-to-date without manual intervention
 - Use the same menu option to enable, check status, or disable

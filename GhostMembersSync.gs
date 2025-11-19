@@ -343,7 +343,7 @@ function setupDailyAutoUpdate() {
     // Already enabled - offer to disable
     const response = ui.alert(
       '📅 Daily Auto-Update',
-      'Status: ENABLED\n\nQuick Update runs automatically every day between 1-4 AM.\n\nView execution history: Extensions → Apps Script → Executions\n\nWould you like to disable it?',
+      'Status: ENABLED\n\nQuick Update runs automatically every day at midnight.\n\nView execution history: Extensions → Apps Script → Executions\n\nWould you like to disable it?',
       ui.ButtonSet.YES_NO
     );
 
@@ -367,23 +367,20 @@ function setupDailyAutoUpdate() {
 
   const response = ui.alert(
     '📅 Enable Daily Auto-Update?',
-    'This will automatically run a Quick Update once per day (between 1-4 AM).\n\nRequirements:\n• Complete at least one Full Update first\n• Okay with daily API calls to Ghost\n\nEnable now?',
+    'This will automatically run a Quick Update once per day at midnight.\n\nRequirements:\n• Complete at least one Full Update first\n• Okay with daily API calls to Ghost\n\nEnable now?',
     ui.ButtonSet.YES_NO
   );
 
   if (response === ui.Button.YES) {
-    // Random hour between 1-4 AM to distribute load across users
-    const randomHour = Math.floor(Math.random() * 3) + 1;
-
     ScriptApp.newTrigger('dailyQuickUpdate')
       .timeBased()
-      .atHour(randomHour)
+      .atHour(0)
       .everyDays(1)
       .create();
 
     ui.alert(
       '✅ Enabled',
-      `Daily Auto-Update is now active!\n\nQuick Update will run every day around ${randomHour} AM.\n\nMonitor runs: Extensions → Apps Script → Executions`,
+      'Daily Auto-Update is now active!\n\nQuick Update will run every day at midnight.\n\nMonitor runs: Extensions → Apps Script → Executions',
       ui.ButtonSet.OK
     );
   }
@@ -972,7 +969,7 @@ function showHelp() {
 UPDATE TYPES:
 • Quick Update: Only adds new members (faster)
 • Full Update: Replaces all data from Ghost
-• Daily Auto-Update: Runs Quick Update daily (1-4 AM)
+• Daily Auto-Update: Runs Quick Update daily at midnight
 
 GETTING YOUR API KEY:
 • Ghost Admin → Settings → Integrations
