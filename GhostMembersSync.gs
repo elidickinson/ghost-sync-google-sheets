@@ -43,6 +43,11 @@ function onOpen() {
     .addItem('⚡ Quick Update', 'quickUpdateWithUI')
     .addItem('🔄 Full Update', 'fullUpdateWithUI')
     .addSeparator()
+    .addSubMenu(SpreadsheetApp.getUi().createMenu('📅 Daily Auto-Update')
+      .addItem('Enable Daily Quick Update', 'enableDailyTrigger')
+      .addItem('Disable Daily Quick Update', 'disableDailyTrigger')
+      .addItem('Check Daily Update Status', 'showDailyTriggerStatus'))
+    .addSeparator()
     .addItem('Cancel Update', 'cancelUpdate')
     .addItem('Show Help', 'showHelp')
     .addToUi();
@@ -322,6 +327,179 @@ function deleteContinuationTriggers() {
     if (trigger.getHandlerFunction() === 'continueSyncFromTrigger') {
       ScriptApp.deleteTrigger(trigger);
     }
+  }
+}
+
+// ============================================
+// DAILY TRIGGER MANAGEMENT
+// ============================================
+
+/**
+ * Enables a daily trigger for Quick Update at a random time between 1-4 AM
+ * to avoid hitting API rate limits if many users run at the same time
+ */
+function enableDailyTrigger() {
+  const ui = SpreadsheetApp.getUi();
+  const settings = getSettings();
+
+  // Check if settings are configured
+  if (!settings.ghostUrl || !settings.adminApiKey) {
+    ui.alert(
+      '⚙️ Settings Required',
+      'Please configure your Ghost URL and Admin API Key first:\n\nGhost Sync → Settings',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // Check if there's already a daily trigger
+  const existingTrigger = getDailyTrigger();
+  if (existingTrigger) {
+    ui.alert(
+      '✅ Already Enabled',
+      'Daily Quick Update is already enabled.\n\nUse "Disable Daily Quick Update" first if you want to recreate the trigger.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // Confirm with user
+  const response = ui.alert(
+    '📅 Enable Daily Auto-Update?',
+    'This will automatically run a Quick Update once per day (between 1-4 AM).\n\nMake sure you:\n• Have run at least one Full Update first\n• Are okay with daily API calls to Ghost\n\nContinue?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response !== ui.Button.YES) {
+    return;
+  }
+
+  // Create the trigger with random hour between 1-4 AM to spread load
+  const randomHour = Math.floor(Math.random() * 3) + 1; // 1, 2, or 3 AM
+
+  ScriptApp.newTrigger('dailyQuickUpdate')
+    .timeBased()
+    .atHour(randomHour)
+    .everyDays(1)
+    .create();
+
+  ui.alert(
+    '✅ Daily Update Enabled',
+    `Quick Update will run automatically every day around ${randomHour} AM.\n\nYou can check the execution log in Extensions → Apps Script → Executions to monitor runs.\n\nTo disable: Ghost Sync → Daily Auto-Update → Disable Daily Quick Update`,
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Disables the daily trigger for Quick Update
+ */
+function disableDailyTrigger() {
+  const ui = SpreadsheetApp.getUi();
+  const trigger = getDailyTrigger();
+
+  if (!trigger) {
+    ui.alert(
+      'ℹ️ Not Enabled',
+      'Daily Quick Update is not currently enabled.',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  ScriptApp.deleteTrigger(trigger);
+
+  ui.alert(
+    '✅ Daily Update Disabled',
+    'The daily Quick Update trigger has been removed.',
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Shows the current status of the daily trigger
+ */
+function showDailyTriggerStatus() {
+  const ui = SpreadsheetApp.getUi();
+  const trigger = getDailyTrigger();
+
+  if (!trigger) {
+    ui.alert(
+      '📅 Daily Update Status',
+      'Status: Disabled\n\nTo enable automatic daily updates:\nGhost Sync → Daily Auto-Update → Enable Daily Quick Update',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // Get trigger details
+  const triggerSource = trigger.getTriggerSource();
+  const eventType = trigger.getEventType();
+
+  let scheduleInfo = 'Enabled (runs daily)';
+
+  ui.alert(
+    '📅 Daily Update Status',
+    `Status: ${scheduleInfo}\n\nThe Quick Update will run automatically every day.\n\nView execution history:\nExtensions → Apps Script → Executions`,
+    ui.ButtonSet.OK
+  );
+}
+
+/**
+ * Gets the existing daily trigger if it exists
+ * @returns {Trigger|null} The daily trigger or null if not found
+ */
+function getDailyTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'dailyQuickUpdate') {
+      return trigger;
+    }
+  }
+  return null;
+}
+
+/**
+ * Function called by the daily trigger - runs Quick Update without UI dialogs
+ * This version is designed to run from triggers and logs instead of showing UI
+ */
+function dailyQuickUpdate() {
+  const settings = getSettings();
+
+  if (!settings.ghostUrl || !settings.adminApiKey) {
+    Logger.log('Daily Quick Update skipped - settings not configured');
+    return;
+  }
+
+  Logger.log('Daily Quick Update started');
+
+  try {
+    const sheet = getOrCreateSheet();
+
+    // If attribution is off, Quick Update has no advantage - just do Full Update
+    if (!settings.includeAttribution) {
+      Logger.log('Attribution disabled - Daily Quick Update redirecting to Full Update');
+      sheet.clear();
+      setupSheet();
+      clearState();
+      deleteContinuationTriggers();
+      processMembersSync(true); // Full update
+    } else {
+      // Quick update: setup headers if needed
+      if (sheet.getLastRow() < HEADER_ROW) {
+        setupSheet();
+      }
+
+      // Clear any previous state and start fresh
+      clearState();
+      deleteContinuationTriggers();
+      processMembersSync(false); // Quick update
+    }
+
+    Logger.log('Daily Quick Update completed successfully');
+  } catch (e) {
+    Logger.log(`Daily Quick Update failed: ${e.message}`);
+    updateStatusRow(`❌ Daily Update Failed: ${e.message}`);
+    throw e;
   }
 }
 
@@ -857,11 +1035,19 @@ function showHelp() {
   `QUICK START:
 1. Click "Ghost Sync → Settings"
 2. Enter your Ghost URL and Admin API Key
-3. Click "Ghost Sync → Quick Update" or "Full Update"
+3. Click "Ghost Sync → Full Update" (first time)
+4. Optional: Enable "Daily Auto-Update" for automatic syncs
 
 UPDATE TYPES:
 • Quick Update: Only adds new members (faster, incremental)
 • Full Update: Replaces all data with fresh data from Ghost
+• Daily Auto-Update: Automatically runs Quick Update daily
+
+DAILY AUTO-UPDATE:
+• Go to "Ghost Sync → Daily Auto-Update → Enable Daily Quick Update"
+• Runs automatically once per day (1-4 AM)
+• Requires at least one Full Update first
+• Check status or disable anytime from the menu
 
 GETTING YOUR API KEY:
 • Go to Ghost Admin → Settings → Integrations
@@ -876,14 +1062,13 @@ WHAT GETS SYNCED:
 ✓ Labels, newsletters, tiers
 
 PERMISSIONS:
-This add-on only requests:
+This add-on requests:
 • Access to THIS spreadsheet (not all your sheets)
 • External service access (to call Ghost API)
-
-No auto-sync or background triggers.
+• Script app triggers (for daily auto-update)
 
 TROUBLESHOOTING:
-• Check View → Logs for errors
+• Check Extensions → Apps Script → Executions for logs
 • Verify API key format has colon (:)
 • Make sure Ghost URL has no trailing slash
 
