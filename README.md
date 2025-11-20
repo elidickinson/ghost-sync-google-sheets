@@ -47,6 +47,13 @@ Note: Google will also send you an email alert that you added an unauthorized ap
 - Only updates new members or missing attribution data
 - Must complete at least one Full Update first
 
+### Daily Auto-Update
+**Ghost Sync → Setup Daily Auto-Update**
+- Automatically runs Quick Update once per day at midnight
+- Requires at least one Full Update to be completed first
+- Perfect for keeping your sheet up-to-date without manual intervention
+- Use the same menu option to enable, check status, or disable
+
 ## Working with Data
 
 **Don't edit the "Ghost Members" sheet directly** - it gets overwritten during sync.

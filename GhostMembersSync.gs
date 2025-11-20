@@ -43,6 +43,8 @@ function onOpen() {
     .addItem('⚡ Quick Update', 'quickUpdateWithUI')
     .addItem('🔄 Full Update', 'fullUpdateWithUI')
     .addSeparator()
+    .addItem('📅 Setup Daily Auto-Update', 'setupDailyAutoUpdate')
+    .addSeparator()
     .addItem('Cancel Update', 'cancelUpdate')
     .addItem('Show Help', 'showHelp')
     .addToUi();
@@ -326,6 +328,93 @@ function deleteContinuationTriggers() {
 }
 
 // ============================================
+// DAILY TRIGGER MANAGEMENT
+// ============================================
+
+/**
+ * Setup or manage the daily auto-update trigger
+ * Automatically detects if trigger is enabled and provides appropriate options
+ */
+function setupDailyAutoUpdate() {
+  const ui = SpreadsheetApp.getUi();
+  const existingTrigger = getDailyTrigger();
+
+  if (existingTrigger) {
+    // Already enabled - offer to disable
+    const response = ui.alert(
+      '📅 Daily Auto-Update',
+      'Status: ENABLED\n\nQuick Update runs automatically every day at midnight.\n\nView execution history: Extensions → Apps Script → Executions\n\nWould you like to disable it?',
+      ui.ButtonSet.YES_NO
+    );
+
+    if (response === ui.Button.YES) {
+      ScriptApp.deleteTrigger(existingTrigger);
+      ui.alert('✅ Disabled', 'Daily Auto-Update has been disabled.', ui.ButtonSet.OK);
+    }
+    return;
+  }
+
+  // Not enabled - check settings and offer to enable
+  const settings = getSettings();
+  if (!settings.ghostUrl || !settings.adminApiKey) {
+    ui.alert(
+      '⚙️ Settings Required',
+      'Please configure your Ghost URL and Admin API Key first:\n\nGhost Sync → Settings',
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  const response = ui.alert(
+    '📅 Enable Daily Auto-Update?',
+    'This will automatically run a Quick Update once per day at midnight.\n\nRequirements:\n• Complete at least one Full Update first\n• Okay with daily API calls to Ghost\n\nEnable now?',
+    ui.ButtonSet.YES_NO
+  );
+
+  if (response === ui.Button.YES) {
+    ScriptApp.newTrigger('dailyQuickUpdate')
+      .timeBased()
+      .atHour(0)
+      .everyDays(1)
+      .create();
+
+    ui.alert(
+      '✅ Enabled',
+      'Daily Auto-Update is now active!\n\nQuick Update will run every day at midnight.\n\nMonitor runs: Extensions → Apps Script → Executions',
+      ui.ButtonSet.OK
+    );
+  }
+}
+
+/**
+ * Gets the existing daily trigger if it exists
+ * @returns {Trigger|null} The daily trigger or null if not found
+ */
+function getDailyTrigger() {
+  const triggers = ScriptApp.getProjectTriggers();
+  for (const trigger of triggers) {
+    if (trigger.getHandlerFunction() === 'dailyQuickUpdate') {
+      return trigger;
+    }
+  }
+  return null;
+}
+
+/**
+ * Function called by the daily trigger - runs Quick Update without UI dialogs
+ * Errors are automatically logged to Cloud Logging (Extensions → Apps Script → Executions)
+ */
+function dailyQuickUpdate() {
+  const settings = getSettings();
+
+  if (!settings.ghostUrl || !settings.adminApiKey) {
+    return;
+  }
+
+  startSync(false); // false = quick update (unless attribution is off)
+}
+
+// ============================================
 // GHOST API
 // ============================================
 
@@ -598,6 +687,32 @@ function continueSyncFromTrigger() {
 // SYNC FUNCTION
 // ============================================
 
+/**
+ * Core sync logic shared by UI and trigger-based syncs
+ * Handles setup, determines if full update needed, and calls processMembersSync
+ */
+function startSync(isFullUpdate) {
+  const settings = getSettings();
+
+  // If attribution is off, Quick Update has no advantage - just do Full Update
+  if (!isFullUpdate && !settings.includeAttribution) {
+    isFullUpdate = true;
+  }
+
+  const sheet = getOrCreateSheet();
+
+  if (isFullUpdate) {
+    sheet.clear();
+    setupSheet();
+  } else if (sheet.getLastRow() < HEADER_ROW) {
+    setupSheet();
+  }
+
+  clearState();
+  deleteContinuationTriggers();
+  processMembersSync(isFullUpdate);
+}
+
 function syncMembersWithUI(isFullUpdate) {
   const settings = getSettings();
 
@@ -606,40 +721,20 @@ function syncMembersWithUI(isFullUpdate) {
     return;
   }
 
-  // If attribution is off, Quick Update has no advantage - just do Full Update
+  // Show appropriate message
   if (!isFullUpdate && !settings.includeAttribution) {
-    Logger.log('Attribution disabled - Quick Update redirecting to Full Update');
-    isFullUpdate = true;
     SpreadsheetApp.getActiveSpreadsheet().toast('Attribution is disabled so doing a Full Update...', 'Ghost Sync', 3);
   } else {
     SpreadsheetApp.getActiveSpreadsheet().toast('Preparing to update...', 'Ghost Sync', 3);
   }
 
   try {
-    const sheet = getOrCreateSheet();
-
-    if (isFullUpdate) {
-      // Full update: clear everything and setup fresh
-      sheet.clear();
-      setupSheet();
-    } else if (sheet.getLastRow() < HEADER_ROW) {
-      // Quick update: setup headers if needed
-      setupSheet();
-      SpreadsheetApp.getActiveSpreadsheet().toast('Sheet setup complete...', 'Ghost Sync', 3);
-    }
-
-    // Clear any previous state and start fresh
-    clearState();
-    deleteContinuationTriggers();
-
-    processMembersSync(isFullUpdate);
-
+    startSync(isFullUpdate);
   } catch (e) {
-    Logger.log(`Error: ${e.message}`);
     updateStatusRow(`❌ Sync Failed: ${e.message}`);
     SpreadsheetApp.getUi().alert(
       'Sync Failed',
-      `Error: ${e.message}\n\nCheck View → Logs for details.`,
+      `Error: ${e.message}\n\nCheck Extensions → Apps Script → Executions for details.`,
       SpreadsheetApp.getUi().ButtonSet.OK
     );
   }
@@ -880,16 +975,17 @@ function showHelp() {
   ui.alert(
   '❓ Help - Ghost Members Sync',
   `QUICK START:
-1. Click "Ghost Sync → Settings"
-2. Enter your Ghost URL and Admin API Key
-3. Click "Ghost Sync → Quick Update" or "Full Update"
+1. Ghost Sync → Settings (enter URL and API key)
+2. Ghost Sync → Full Update (first time)
+3. Optional: Ghost Sync → Setup Daily Auto-Update
 
 UPDATE TYPES:
-• Quick Update: Only adds new members (faster, incremental)
-• Full Update: Replaces all data with fresh data from Ghost
+• Quick Update: Only adds new members (faster)
+• Full Update: Replaces all data from Ghost
+• Daily Auto-Update: Runs Quick Update daily at midnight
 
 GETTING YOUR API KEY:
-• Go to Ghost Admin → Settings → Integrations
+• Ghost Admin → Settings → Integrations
 • Click "Add custom integration"
 • Copy the Admin API Key (format: id:secret)
 
@@ -901,16 +997,14 @@ WHAT GETS SYNCED:
 ✓ Labels, newsletters, tiers
 
 PERMISSIONS:
-This add-on only requests:
-• Access to THIS spreadsheet (not all your sheets)
-• External service access (to call Ghost API)
-
-No auto-sync or background triggers.
+• Access to THIS spreadsheet only
+• External service access (Ghost API)
+• Script triggers (for daily auto-update)
 
 TROUBLESHOOTING:
-• Check View → Logs for errors
-• Verify API key format has colon (:)
-• Make sure Ghost URL has no trailing slash
+• Extensions → Apps Script → Executions for logs
+• Verify API key has colon (:)
+• Ghost URL should not have trailing slash
 
 Visit: ghost.org/docs/admin-api`,
   ui.ButtonSet.OK
