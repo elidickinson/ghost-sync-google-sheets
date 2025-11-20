@@ -540,8 +540,8 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
     member.email || '',
     member.name || '',
     member.status || '',
-    member.created_at || '',
-    member.updated_at || '',
+    member.created_at ? new Date(member.created_at) : '',
+    member.updated_at ? new Date(member.updated_at) : '',
     member.email_open_rate || '',
     member.email_opened_count || '',
     member.email_count || '',
@@ -555,7 +555,7 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
     member.comped ? 'Yes' : 'No',
     member.geolocation || '',
     member.unsubscribe_url || '',
-    member.last_seen_at || '',
+    member.last_seen_at ? new Date(member.last_seen_at) : '',
     new Date(memberSyncTimestamp).toISOString()
   ];
 
