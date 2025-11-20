@@ -2,6 +2,21 @@
 
 Sync your Ghost members list to Google Sheets (including attribution fields)
 
+## Deployment Options
+
+### For Google Workspace Domains (Recommended)
+Deploy this as an **internal Google Workspace add-on** for your entire organization:
+- ✅ Users install from Google Workspace Marketplace (private to your domain)
+- ✅ Centralized updates and management
+- ✅ Admin can deploy domain-wide
+- ✅ Professional installation experience
+
+**→ See [WORKSPACE_DEPLOYMENT.md](WORKSPACE_DEPLOYMENT.md)** for complete deployment guide
+
+**→ Use [DEPLOYMENT_CHECKLIST.md](DEPLOYMENT_CHECKLIST.md)** for step-by-step checklist
+
+### For Individual Users (Quick Start)
+
 ## Installation
 
 1. **Create a new Google Sheet** or open an existing one
