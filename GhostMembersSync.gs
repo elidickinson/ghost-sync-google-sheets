@@ -22,7 +22,7 @@ const GHOST_HEADERS = [
 
 const MEMBERS_PAGE_SIZE = 100;
 const MAX_EXECUTION_TIME = 4.5 * 60 * 1000; // There is a 6 minute limit but we must leave a buffer
-const API_REQUEST_DELAY_MS = 10; // Delay between API requests to go easy on the server
+const API_REQUEST_DELAY_MS = 100; // Delay between API requests to go easy on the server
 const GHOST_MEMBERS_SHEET_NAME = 'Ghost Members';
 const SPINNER_ALT_TITLE = 'Ghost sync in progress...';
 const STATUS_ROW = 1; // Row 1 for status messages and spinner
@@ -690,27 +690,17 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   }
 
   let existingMemberIdToRow = {};
-  let existingMemberUpdatedAt = {};
 
-  // For quick update, build map of member IDs to row numbers and updated_at timestamps
-  // Do this on every run (not just first) so continuation runs have access to the data
-  if (!isFullUpdate && sheet.getLastRow() > HEADER_ROW) {
-    if (!lastProcessedId) {
-      updateStatusRow('Checking existing members...');
-    }
-    const updatedAtColumn = GHOST_HEADERS.indexOf('Updated At') + 1;
-    const existingData = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, updatedAtColumn).getValues();
-
-    for (let i = 0; i < existingData.length; i++) {
-      const memberId = existingData[i][0];
-      if (memberId) {
-        existingMemberIdToRow[memberId] = i + DATA_START_ROW;
-        existingMemberUpdatedAt[memberId] = existingData[i][updatedAtColumn - 1];
+  // For quick update on first run, build map of member IDs to row numbers
+  if (!isFullUpdate && !lastProcessedId && sheet.getLastRow() > HEADER_ROW) {
+    updateStatusRow('Checking existing members...');
+    const memberIds = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, 1).getValues();
+    for (let i = 0; i < memberIds.length; i++) {
+      if (memberIds[i][0]) {
+        existingMemberIdToRow[memberIds[i][0]] = i + DATA_START_ROW;
       }
     }
-    if (!lastProcessedId) {
-      Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
-    }
+    Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
   }
 
   let hasMore = true;
@@ -782,28 +772,14 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
       }
 
       // Update existing members with browse data only (no attribution fetch)
-      // Only update if updated_at has changed
-      let updatedCount = 0;
-      let skippedCount = 0;
-
       for (const member of existingMembers) {
-        const existingUpdatedAt = existingMemberUpdatedAt[member.id];
-        const newUpdatedAt = member.updated_at;
-
-        // Only update if updated_at has changed
-        if (existingUpdatedAt !== newUpdatedAt) {
-          const rowNumber = existingMemberIdToRow[member.id];
-          const row = memberToRow(member, syncStartTime, null);
-          sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
-          updatedCount++;
-        } else {
-          skippedCount++;
-        }
+        const rowNumber = existingMemberIdToRow[member.id];
+        const row = memberToRow(member, syncStartTime, null);
+        sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
         membersSynced++;
       }
-
       if (existingMembers.length > 0) {
-        Logger.log(`Existing members: ${updatedCount} updated, ${skippedCount} skipped (unchanged)`);
+        Logger.log(`Updated ${existingMembers.length} existing members`);
       }
 
       // Add new members with attribution fetch
