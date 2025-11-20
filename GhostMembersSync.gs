@@ -522,6 +522,23 @@ function quickUpdateWithUI() {
 }
 
 function fullUpdateWithUI() {
+  // Check if the Ghost Members sheet exists and has more than 1000 rows
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(GHOST_MEMBERS_SHEET_NAME);
+
+  if (sheet && sheet.getLastRow() > 1000) {
+    const ui = SpreadsheetApp.getUi();
+    const response = ui.alert(
+      'Confirm Full Update',
+      'Are you sure? This could take a long time.',
+      ui.ButtonSet.YES_NO
+    );
+
+    if (response !== ui.Button.YES) {
+      return;
+    }
+  }
+
   syncMembersWithUI(true); // true = full update (clear all)
 }
 
