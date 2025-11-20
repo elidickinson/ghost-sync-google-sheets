@@ -410,12 +410,10 @@ function setupSheet() {
 
 }
 
-function updateStatusRow(message) {
+function setupStatusRowFormatting() {
   const sheet = getOrCreateSheet();
-
   const statusCell = sheet.getRange(STATUS_ROW, 2, 1, 19);
 
-  // Check if already merged, if not set up formatting
   if (!statusCell.isPartOfMerge()) {
     statusCell
       .merge()
@@ -424,9 +422,12 @@ function updateStatusRow(message) {
       .setFontWeight('bold')
       .setBackground('#98FB98');
   }
+}
 
+function updateStatusRow(message) {
+  const sheet = getOrCreateSheet();
+  const statusCell = sheet.getRange(STATUS_ROW, 2, 1, 19);
   statusCell.setValue(message);
-
   SpreadsheetApp.flush();
 }
 
@@ -664,9 +665,10 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   Logger.log(`${updateType}: afterId=${lastProcessedId || 'null'}, synced=${membersSynced}, syncStartTime=${syncStartTime}, includeAttribution=${settings.includeAttribution}`);
 
   if (!lastProcessedId) {
-    // first round so show spinner
+    // first round so show spinner and setup status row formatting
     hideSpinner();  // just in case any leftover spinner from a previous failed run
     showSpinner();
+    setupStatusRowFormatting();
     updateStatusRow('Starting sync...');
   }
 
@@ -831,18 +833,25 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   deleteContinuationTriggers();
   hideSpinner();
 
-  sheet.autoResizeColumns(1, sheet.getLastColumn());
-  // Resize down some long columns
-  sheet.setColumnWidth(GHOST_HEADERS.indexOf('Geolocation') + 1, 100);
-  sheet.setColumnWidth(GHOST_HEADERS.indexOf('Unsubscribe URL') + 1, 100);
+  // Brief pause to let Spreadsheet service recover after heavy sync
+  Utilities.sleep(500);
 
-  const lastSyncTime = new Date().toLocaleString();
-  const statusMsg = !isFullUpdate && removedCount > 0
-    ? `Synced ${membersSynced}, removed ${removedCount}. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`
-    : `Synced ${membersSynced} members. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`;
+  try {
+    const lastSyncTime = new Date().toLocaleString();
+    const statusMsg = !isFullUpdate && removedCount > 0
+      ? `Synced ${membersSynced}, removed ${removedCount}. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`
+      : `Synced ${membersSynced} members. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`;
+    updateStatusRow(statusMsg);
+    sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
 
-  updateStatusRow(statusMsg);
-  sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
+    sheet.autoResizeColumns(1, sheet.getLastColumn());
+    // Resize down some long columns
+    sheet.setColumnWidth(GHOST_HEADERS.indexOf('Geolocation') + 1, 100);
+    sheet.setColumnWidth(GHOST_HEADERS.indexOf('Unsubscribe URL') + 1, 100);
+  } catch (e) {
+    Logger.log(`Warning: Could not update final status due to service timeout: ${e.message}`);
+    Logger.log('Sync completed successfully despite this error');
+  }
 }
 
 // ============================================
