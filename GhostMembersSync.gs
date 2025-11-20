@@ -673,17 +673,27 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   }
 
   let existingMemberIdToRow = {};
+  let existingMemberUpdatedAt = {};
 
-  // For quick update on first run, build map of member IDs to row numbers
-  if (!isFullUpdate && !lastProcessedId && sheet.getLastRow() > HEADER_ROW) {
-    updateStatusRow('Checking existing members...');
-    const memberIds = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, 1).getValues();
-    for (let i = 0; i < memberIds.length; i++) {
-      if (memberIds[i][0]) {
-        existingMemberIdToRow[memberIds[i][0]] = i + DATA_START_ROW;
+  // For quick update, build map of member IDs to row numbers and updated_at timestamps
+  // Do this on every run (not just first) so continuation runs have access to the data
+  if (!isFullUpdate && sheet.getLastRow() > HEADER_ROW) {
+    if (!lastProcessedId) {
+      updateStatusRow('Checking existing members...');
+    }
+    const updatedAtColumn = GHOST_HEADERS.indexOf('Updated At') + 1;
+    const existingData = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, updatedAtColumn).getValues();
+
+    for (let i = 0; i < existingData.length; i++) {
+      const memberId = existingData[i][0];
+      if (memberId) {
+        existingMemberIdToRow[memberId] = i + DATA_START_ROW;
+        existingMemberUpdatedAt[memberId] = existingData[i][updatedAtColumn - 1];
       }
     }
-    Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
+    if (!lastProcessedId) {
+      Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
+    }
   }
 
   let hasMore = true;
@@ -755,14 +765,28 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
       }
 
       // Update existing members with browse data only (no attribution fetch)
+      // Only update if updated_at has changed
+      let updatedCount = 0;
+      let skippedCount = 0;
+
       for (const member of existingMembers) {
-        const rowNumber = existingMemberIdToRow[member.id];
-        const row = memberToRow(member, syncStartTime, null);
-        sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+        const existingUpdatedAt = existingMemberUpdatedAt[member.id];
+        const newUpdatedAt = member.updated_at;
+
+        // Only update if updated_at has changed
+        if (existingUpdatedAt !== newUpdatedAt) {
+          const rowNumber = existingMemberIdToRow[member.id];
+          const row = memberToRow(member, syncStartTime, null);
+          sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
+          updatedCount++;
+        } else {
+          skippedCount++;
+        }
         membersSynced++;
       }
+
       if (existingMembers.length > 0) {
-        Logger.log(`Updated ${existingMembers.length} existing members`);
+        Logger.log(`Existing members: ${updatedCount} updated, ${skippedCount} skipped (unchanged)`);
       }
 
       // Add new members with attribution fetch
@@ -834,22 +858,21 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   hideSpinner();
 
   // Brief pause to let Spreadsheet service recover after heavy sync
-  Utilities.sleep(500);
+  Utilities.sleep(1000);
+  const lastSyncTime = new Date().toLocaleString();
+  const statusMsg = !isFullUpdate && removedCount > 0
+    ? `Synced ${membersSynced}, removed ${removedCount}. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`
+    : `Synced ${membersSynced} members. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`;
+  updateStatusRow(statusMsg);
+  sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
 
   try {
-    const lastSyncTime = new Date().toLocaleString();
-    const statusMsg = !isFullUpdate && removedCount > 0
-      ? `Synced ${membersSynced}, removed ${removedCount}. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`
-      : `Synced ${membersSynced} members. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`;
-    updateStatusRow(statusMsg);
-    sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
-
     sheet.autoResizeColumns(1, sheet.getLastColumn());
     // Resize down some long columns
     sheet.setColumnWidth(GHOST_HEADERS.indexOf('Geolocation') + 1, 100);
     sheet.setColumnWidth(GHOST_HEADERS.indexOf('Unsubscribe URL') + 1, 100);
   } catch (e) {
-    Logger.log(`Warning: Could not update final status due to service timeout: ${e.message}`);
+    Logger.log(`Warning: Could not do final cleanup: ${e.message}`);
     Logger.log('Sync completed successfully despite this error');
   }
 }
