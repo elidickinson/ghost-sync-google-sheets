@@ -1,6 +1,18 @@
 # Ghost Members Sync for Google Sheets
 
-Sync your Ghost members list to Google Sheets (including attribution fields)
+Sync your full Ghost CMS member data to a Google Sheet (including attribution/referral fields). 
+
+Features:
+ - The sync happens within the Google Sheet. No need to trust a third-party service with your member data.
+ - Sync pulls from API to ensure data integrity. Doesn't rely on catching webhooks or being run on a strict schedule. 
+ - Can fetch attribution fields (source, utm strings, referrer), which are not available in the normal member export.
+ - Optional automatic daily syncing.
+ - Open source and free.
+ 
+Limitations:
+ - Fetching attribution data is slow because it requires an API call for *each member*. Syncing a Ghost Pro account could do about 125 records per minute.
+ - Related to above, Google Sheets has [quota limitations](https://developers.google.com/apps-script/guides/services/quotas) that (I think) won't let you do more than around 20,000 records or 90 minutes of execution per day with a gmail.com account. Or 100,000 records and 6 hours of execution per day for a Google Workspace account. This should only be an issue for getting that first sync to complete with attribution fields enabled.
+
 
 ## Installation
 
@@ -9,7 +21,7 @@ Sync your Ghost members list to Google Sheets (including attribution fields)
 3. Delete any existing code in the editor
 4. **Copy and paste** the entire contents of `GhostMembersSync.gs`
 5. Click **Save** (disk icon or Ctrl/Cmd+S)
-6. **Reload your spreadsheet** - you should see a new "👻 Ghost Sync" menu
+6. Go back to your spreadsheet and **Reload the page** - you should see a new "👻 Ghost Sync" menu
 
 ### First Run: Authorization
 
@@ -18,14 +30,13 @@ The first time you use any Ghost Sync function, Google will ask you to authorize
 1. Click **Ghost Sync → Settings**
 2. You'll see: **"Authorization Required"** - click **Continue**
 3. **Select your Google account**
-4. You'll see a warning: **"Google hasn't verified this app"**
+4. You may see a warning like: **"Google hasn't verified this app"**
    - This is normal - it's your own script, not a published app reviewed by Google
    - Click **Advanced** (bottom left)
-   - Click **"Go to [Your Sheet Name] (unsafe)"**
-5. Click **"Allow"** for the permissions
-   - The script needs access to your spreadsheet (just the one you install this in) and external services to communicate with Ghost's API
-
-Note: Google will also send you an email alert that you added an unauthorized app. This is expected for custom scripts.
+   - Click **"Go to Unnamed Project (unsafe)"**
+   - Note: Google will also email you an alert. This is expected for custom Google Sheets scripts.
+5. Grant permissions to the script: click **Select All** then scroll to the bottom and **Continue.**
+   - The script only requests permission to edit the current Sheet, not anything else in your Google account.
 
 ## Setup
 

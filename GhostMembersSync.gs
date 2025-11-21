@@ -40,8 +40,8 @@ function onOpen() {
     .createMenu('👻 Ghost Sync')
     .addItem('⚙️ Settings', 'showSettings')
     .addSeparator()
-    .addItem('⚡ Quick Update', 'quickUpdateWithUI')
-    .addItem('🔄 Full Update', 'fullUpdateWithUI')
+    .addItem('⚡ Run Sync Now', 'syncWithUI')
+    .addItem('⚡ Quick Sync: new members only', 'addNewOnlyWithUI')
     .addSeparator()
     .addItem('📅 Setup Daily Auto-Update', 'setupDailyAutoUpdate')
     .addSeparator()
@@ -214,16 +214,26 @@ function generateToken(adminApiKey) {
  * Helper function to make API calls with retry logic for rate limiting
  * @param {string} url - The API URL to call
  * @param {Object} options - Options for the UrlFetchApp.fetch call
+ * @param {string} ghostUrl - Ghost site URL (optional, for auto-authentication)
+ * @param {string} adminApiKey - Ghost Admin API Key (optional, for auto-authentication)
  * @returns {HTTPResponse} The successful response object
  * @throws {Error} If all retries fail
  */
-function makeApiCall(url, options) {
+function makeApiCall(url, options, ghostUrl = null, adminApiKey = null) {
   let retryCount = 0;
   const maxRetries = 5;
   let backoffMs = 2000;
 
   options = options || {};
   options.muteHttpExceptions = true;
+
+  // Auto-add Ghost authentication if provided
+  if (ghostUrl && adminApiKey) {
+    const token = generateToken(adminApiKey);
+    options.headers = options.headers || {};
+    options.headers['Authorization'] = `Ghost ${token}`;
+    options.headers['Accept-Version'] = 'v5.0';
+  }
 
   while (retryCount <= maxRetries) {
     if (retryCount === 0 && API_REQUEST_DELAY_MS > 0) {
@@ -277,11 +287,11 @@ function base64UrlEncode(data) {
 
 const STATE_KEY_PREFIX = 'GHOST_SYNC_STATE_';
 
-function saveState(lastProcessedId, membersSynced, isFullUpdate, syncStartTime) {
+function saveState(lastProcessedId, membersSynced, isAddNewOnly, syncStartTime) {
   const props = PropertiesService.getScriptProperties();
   props.setProperty(STATE_KEY_PREFIX + 'LAST_ID', lastProcessedId || '');
   props.setProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT', membersSynced.toString());
-  props.setProperty(STATE_KEY_PREFIX + 'IS_FULL_UPDATE', isFullUpdate.toString());
+  props.setProperty(STATE_KEY_PREFIX + 'IS_ADD_NEW_ONLY', isAddNewOnly.toString());
   props.setProperty(STATE_KEY_PREFIX + 'SYNC_START_TIME', syncStartTime.toString());
 }
 
@@ -294,7 +304,7 @@ function loadState() {
   return {
     lastProcessedId: lastId || null,
     membersSynced: parseInt(props.getProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT')) || 0,
-    isFullUpdate: props.getProperty(STATE_KEY_PREFIX + 'IS_FULL_UPDATE') === 'true',
+    isAddNewOnly: props.getProperty(STATE_KEY_PREFIX + 'IS_ADD_NEW_ONLY') === 'true',
     syncStartTime: parseInt(props.getProperty(STATE_KEY_PREFIX + 'SYNC_START_TIME')) || Date.now()
   };
 }
@@ -303,7 +313,7 @@ function clearState() {
   const props = PropertiesService.getScriptProperties();
   props.deleteProperty(STATE_KEY_PREFIX + 'LAST_ID');
   props.deleteProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT');
-  props.deleteProperty(STATE_KEY_PREFIX + 'IS_FULL_UPDATE');
+  props.deleteProperty(STATE_KEY_PREFIX + 'IS_ADD_NEW_ONLY');
   props.deleteProperty(STATE_KEY_PREFIX + 'SYNC_START_TIME');
 }
 
@@ -343,7 +353,7 @@ function setupDailyAutoUpdate() {
     // Already enabled - offer to disable
     const response = ui.alert(
       '📅 Daily Auto-Update',
-      'Status: ENABLED\n\nQuick Update runs automatically every day at midnight.\n\nView execution history: Extensions → Apps Script → Executions\n\nWould you like to disable it?',
+      'Status: ENABLED\n\nSync runs automatically every day at midnight.\n\nView execution history: Extensions → Apps Script → Executions\n\nWould you like to disable it?',
       ui.ButtonSet.YES_NO
     );
 
@@ -367,7 +377,7 @@ function setupDailyAutoUpdate() {
 
   const response = ui.alert(
     '📅 Enable Daily Auto-Update?',
-    'This will automatically run a Quick Update once per day at midnight.\n\nRequirements:\n• Complete at least one Full Update first\n• Okay with daily API calls to Ghost\n\nEnable now?',
+    'This will automatically run a Sync once per day at midnight.\n\nEnable now?',
     ui.ButtonSet.YES_NO
   );
 
@@ -380,7 +390,7 @@ function setupDailyAutoUpdate() {
 
     ui.alert(
       '✅ Enabled',
-      'Daily Auto-Update is now active!\n\nQuick Update will run every day at midnight.\n\nMonitor runs: Extensions → Apps Script → Executions',
+      'Daily Auto-Update is now active!\n\nSync will run every day at midnight.\n\nMonitor runs: Extensions → Apps Script → Executions',
       ui.ButtonSet.OK
     );
   }
@@ -401,7 +411,7 @@ function getDailyTrigger() {
 }
 
 /**
- * Function called by the daily trigger - runs Quick Update without UI dialogs
+ * Function called by the daily trigger - runs Sync without UI dialogs
  * Errors are automatically logged to Cloud Logging (Extensions → Apps Script → Executions)
  */
 function dailyQuickUpdate() {
@@ -411,7 +421,7 @@ function dailyQuickUpdate() {
     return;
   }
 
-  startSync(false); // false = quick update (unless attribution is off)
+  startSync(false); // false = not add-new-only mode (full sync with updates and deletions)
 }
 
 // ============================================
@@ -419,40 +429,31 @@ function dailyQuickUpdate() {
 // ============================================
 
 // Fetch members with full data (except attribution which requires fetchMemberById)
-function fetchMembersPage(ghostUrl, adminApiKey, afterId = null) {
-  const token = generateToken(adminApiKey);
+function fetchMembersPage(ghostUrl, adminApiKey, afterId = null, createdAfter = null) {
   let url = `${ghostUrl}/ghost/api/admin/members/?limit=${MEMBERS_PAGE_SIZE}&order=id ASC&include=labels,newsletters,subscriptions,tiers`;
 
+  const filters = [];
   if (afterId) {
-    const filter = `id:>'${afterId}'`;
-    url += `&filter=${encodeURIComponent(filter)}`;
+    filters.push(`id:>'${afterId}'`);
+  }
+  if (createdAfter) {
+    filters.push(`created_at:>='${createdAfter}'`);
   }
 
-  const response = makeApiCall(url, {
-    method: 'get',
-    headers: {
-      'Authorization': `Ghost ${token}`,
-      'Accept-Version': 'v5.0'
-    }
-  });
+  if (filters.length > 0) {
+    url += `&filter=${encodeURIComponent(filters.join('+'))}`;
+  }
 
+  const response = makeApiCall(url, { method: 'get' }, ghostUrl, adminApiKey);
   const data = JSON.parse(response.getContentText());
   return data.members || [];
 }
 
 // Must call fetchMemberById to retrieve Attribution fields because they aren't in the browse endpoint
 function fetchMemberById(ghostUrl, adminApiKey, memberId) {
-  const token = generateToken(adminApiKey);
   const url = `${ghostUrl}/ghost/api/admin/members/${memberId}/?include=newsletters,subscriptions,tiers`;
 
-  const response = makeApiCall(url, {
-    method: 'get',
-    headers: {
-      'Authorization': `Ghost ${token}`,
-      'Accept-Version': 'v5.0'
-    }
-  });
-
+  const response = makeApiCall(url, { method: 'get' }, ghostUrl, adminApiKey);
   const data = JSON.parse(response.getContentText());
   return data.members && data.members[0] ? data.members[0] : null;
 }
@@ -532,7 +533,7 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
   const subscriptions = mapAndJoin(member.subscriptions, 'status') || '';
 
   const emailSuppression = (member.email_suppression && member.email_suppression.suppressed === true)
-    ? member.email_suppression.info : 'No';
+    ? member.email_suppression.info : '';
 
   const rowData = [
     member.id || '',
@@ -580,80 +581,64 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
 // UI FUNCTIONS
 // ============================================
 
-function quickUpdateWithUI() {
+/**
+ * Validates sheet structure for sync operations
+ * @returns {boolean} true if valid, false if invalid (shows alert)
+ */
+function validateSheetStructure(syncTypeName) {
   const sheet = getOrCreateSheet();
 
-  // Check if sheet has proper structure (headers should be in row 2)
-  if (sheet.getLastRow() >= HEADER_ROW) {
-    const headers = sheet.getRange(HEADER_ROW, 1, 1, sheet.getLastColumn()).getValues()[0];
+  if (sheet.getLastRow() < HEADER_ROW) return true;
 
-    // Expected headers count
-    const expectedHeadersLength = GHOST_HEADERS.length;
-    const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
+  const headers = sheet.getRange(HEADER_ROW, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const expectedHeadersLength = GHOST_HEADERS.length;
+  const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
 
-    // Check key columns including Last Sync Member (required for quick sync)
-    if (headers.length < expectedHeadersLength ||
-        headers[0] !== GHOST_HEADERS[0] ||
-        headers[1] !== GHOST_HEADERS[1] ||
-        headers[lastSyncMemberIndex] !== GHOST_HEADERS[lastSyncMemberIndex]) {
-
-      const ui = SpreadsheetApp.getUi();
-      ui.alert(
-        '⚠️ Quick Update Not Available',
-        `The sheet doesn't have the correct column structure.\n\nExpected: ${expectedHeadersLength} columns with "${GHOST_HEADERS[0]}", "${GHOST_HEADERS[1]}", and "${GHOST_HEADERS[lastSyncMemberIndex]}"\nFound: ${headers.length} columns with "${headers[0] || 'Empty'}", "${headers[1] || 'Empty'}", and "${headers[lastSyncMemberIndex] || 'Missing'}"\n\nPlease run a "Full Update" to recreate the sheet with the correct structure.`,
-        ui.ButtonSet.OK
-      );
-      return;
-    }
+  if (headers.length >= expectedHeadersLength &&
+      headers[0] === GHOST_HEADERS[0] &&
+      headers[1] === GHOST_HEADERS[1] &&
+      headers[lastSyncMemberIndex] === GHOST_HEADERS[lastSyncMemberIndex]) {
+    return true;
   }
 
-  syncMembersWithUI(false); // false = quick update (don't clear)
+  SpreadsheetApp.getUi().alert(
+    `⚠️ ${syncTypeName} Not Available`,
+    `The sheet doesn't have the correct column structure.\n\nExpected: ${expectedHeadersLength} columns with "${GHOST_HEADERS[0]}", "${GHOST_HEADERS[1]}", and "${GHOST_HEADERS[lastSyncMemberIndex]}"\nFound: ${headers.length} columns with "${headers[0] || 'Empty'}", "${headers[1] || 'Empty'}", and "${headers[lastSyncMemberIndex] || 'Missing'}"\n\nPlease delete the sheet and run Sync again to recreate it with the correct structure.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+  return false;
 }
 
-function fullUpdateWithUI() {
-  // Check if the Ghost Members sheet exists and has more than 1000 rows
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const sheet = ss.getSheetByName(GHOST_MEMBERS_SHEET_NAME);
+function syncWithUI() {
+  if (!validateSheetStructure('Sync')) return;
+  syncMembersWithUI(false);
+}
 
-  if (sheet && sheet.getLastRow() > 1000) {
-    const ui = SpreadsheetApp.getUi();
-    const response = ui.alert(
-      'Confirm Full Update',
-      'Are you sure? This could take a long time.',
-      ui.ButtonSet.YES_NO
-    );
-
-    if (response !== ui.Button.YES) {
-      return;
-    }
-  }
-
-  syncMembersWithUI(true); // true = full update (clear all)
+function addNewOnlyWithUI() {
+  if (!validateSheetStructure('Quick Sync')) return;
+  syncMembersWithUI(true);
 }
 
 function cancelUpdate() {
+  const ui = SpreadsheetApp.getUi();
   const state = loadState();
   const triggers = ScriptApp.getProjectTriggers();
   const hasTriggers = triggers.some(t => t.getHandlerFunction() === 'continueSyncFromTrigger');
 
   if (!state && !hasTriggers) {
-    SpreadsheetApp.getUi().alert(
-      '🛑 Cancel Update',
-      'No updates in progress',
-      SpreadsheetApp.getUi().ButtonSet.OK
-    );
+    ui.alert('🛑 Cancel Update', 'No updates in progress', ui.ButtonSet.OK);
     return;
   }
 
   deleteContinuationTriggers();
   clearState();
   hideSpinner();
-  updateStatusRow("Update cancelled")
+  updateStatusRow("Update cancelled");
 
-  SpreadsheetApp.getUi().alert(
+  ui.alert(
     '✅ Update Cancelled',
     'Any in-progress sync has been cancelled and continuation triggers removed.',
-    SpreadsheetApp.getUi().ButtonSet.OK
+    ui.ButtonSet.OK
   );
 }
 
@@ -673,7 +658,7 @@ function continueSyncFromTrigger() {
   Logger.log(`Resuming: afterId=${state.lastProcessedId}, synced=${state.membersSynced}`);
 
   try {
-    processMembersSync(state.isFullUpdate, state.lastProcessedId, state.membersSynced, state.syncStartTime);
+    processMembersSync(state.isAddNewOnly, state.lastProcessedId, state.membersSynced, state.syncStartTime);
   } catch (e) {
     Logger.log(`Error: ${e.message}`);
     clearState();
@@ -689,31 +674,22 @@ function continueSyncFromTrigger() {
 
 /**
  * Core sync logic shared by UI and trigger-based syncs
- * Handles setup, determines if full update needed, and calls processMembersSync
+ * Handles setup and calls processMembersSync
  */
-function startSync(isFullUpdate) {
-  const settings = getSettings();
-
-  // If attribution is off, Quick Update has no advantage - just do Full Update
-  if (!isFullUpdate && !settings.includeAttribution) {
-    isFullUpdate = true;
-  }
-
+function startSync(isAddNewOnly) {
   const sheet = getOrCreateSheet();
 
-  if (isFullUpdate) {
-    sheet.clear();
-    setupSheet();
-  } else if (sheet.getLastRow() < HEADER_ROW) {
+  // Ensure sheet has headers
+  if (sheet.getLastRow() < HEADER_ROW) {
     setupSheet();
   }
 
   clearState();
   deleteContinuationTriggers();
-  processMembersSync(isFullUpdate);
+  processMembersSync(isAddNewOnly);
 }
 
-function syncMembersWithUI(isFullUpdate) {
+function syncMembersWithUI(isAddNewOnly) {
   const settings = getSettings();
 
   if (!settings.ghostUrl || !settings.adminApiKey) {
@@ -721,15 +697,10 @@ function syncMembersWithUI(isFullUpdate) {
     return;
   }
 
-  // Show appropriate message
-  if (!isFullUpdate && !settings.includeAttribution) {
-    SpreadsheetApp.getActiveSpreadsheet().toast('Attribution is disabled so doing a Full Update...', 'Ghost Sync', 3);
-  } else {
-    SpreadsheetApp.getActiveSpreadsheet().toast('Preparing to update...', 'Ghost Sync', 3);
-  }
+  SpreadsheetApp.getActiveSpreadsheet().toast('Preparing to sync...', 'Ghost Sync', 3);
 
   try {
-    startSync(isFullUpdate);
+    startSync(isAddNewOnly);
   } catch (e) {
     updateStatusRow(`❌ Sync Failed: ${e.message}`);
     SpreadsheetApp.getUi().alert(
@@ -761,11 +732,26 @@ function hideSpinner() {
   }
 }
 
-function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced = 0, syncStartTime = null) {
+/**
+ * Fetches member with attribution data if settings enable it
+ * @returns {Object} Object with memberData and attributionTimestamp
+ */
+function getMemberWithAttribution(member, settings, syncStartTime) {
+  if (!settings.includeAttribution) {
+    return { memberData: member, attributionTimestamp: null };
+  }
+
+  const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
+  return fullMember
+    ? { memberData: fullMember, attributionTimestamp: syncStartTime }
+    : { memberData: member, attributionTimestamp: null };
+}
+
+function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced = 0, syncStartTime = null) {
   const settings = getSettings();
   const sheet = getOrCreateSheet();
   const startTime = Date.now();
-  const updateType = isFullUpdate ? 'Full Update' : 'Quick Update';
+  const updateType = isAddNewOnly ? 'Quick Sync (Add New Only)' : 'Sync';
 
   if (!syncStartTime) {
     syncStartTime = startTime;
@@ -782,17 +768,31 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   }
 
   let existingMemberIdToRow = {};
+  let createdAfterFilter = null;
 
-  // For quick update on first run, build map of member IDs to row numbers
-  if (!isFullUpdate && !lastProcessedId && sheet.getLastRow() > HEADER_ROW) {
+  // On first run, build map of member IDs to row numbers
+  if (!lastProcessedId && sheet.getLastRow() > HEADER_ROW) {
     updateStatusRow('Checking existing members...');
-    const memberIds = sheet.getRange(DATA_START_ROW, 1, sheet.getLastRow() - HEADER_ROW, 1).getValues();
+    const numRows = sheet.getLastRow() - HEADER_ROW;
+    const memberIds = sheet.getRange(DATA_START_ROW, 1, numRows, 1).getValues();
     for (let i = 0; i < memberIds.length; i++) {
       if (memberIds[i][0]) {
         existingMemberIdToRow[memberIds[i][0]] = i + DATA_START_ROW;
       }
     }
     Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
+
+    // For Quick Sync, find max Created At to filter API query
+    if (isAddNewOnly) {
+      const createdAtColumnIndex = GHOST_HEADERS.indexOf('Created At') + 1;
+      const createdAtDates = sheet.getRange(DATA_START_ROW, createdAtColumnIndex, numRows, 1).getValues();
+      const validDates = createdAtDates.map(row => row[0]).filter(d => d);
+      if (validDates.length > 0) {
+        const maxDate = validDates.reduce((max, d) => d > max ? d : max);
+        createdAfterFilter = new Date(maxDate).toISOString();
+        Logger.log(`Quick Sync: filtering for members created after ${createdAfterFilter}`);
+      }
+    }
   }
 
   let hasMore = true;
@@ -802,7 +802,7 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
     // Check if we're approaching time limit
     if (Date.now() - startTime > MAX_EXECUTION_TIME) {
       Logger.log(`Time limit: pausing at afterId=${afterId}, synced=${membersSynced}`);
-      saveState(afterId, membersSynced, isFullUpdate, syncStartTime);
+      saveState(afterId, membersSynced, isAddNewOnly, syncStartTime);
       createContinuationTrigger();
       updateStatusRow(`On hold after syncing ${membersSynced} members and will resume in 1 minute...`);
       return;  // bail from this function early
@@ -810,7 +810,7 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
 
     // Fetch next page with full member data
     Logger.log(`Fetching page: afterId=${afterId || 'null'}`);
-    const membersPage = fetchMembersPage(settings.ghostUrl, settings.adminApiKey, afterId);
+    const membersPage = fetchMembersPage(settings.ghostUrl, settings.adminApiKey, afterId, createdAfterFilter);
     Logger.log(`Received ${membersPage.length} members`);
 
     if (membersPage.length === 0) {
@@ -819,85 +819,43 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
       break;
     }
 
-    // Process members differently for quick vs full update
-    if (isFullUpdate) {
-      // Full update: process all members
-      Logger.log(`Processing ${membersPage.length} members for full update`);
-      const rows = [];
+    // Split members into existing and new
+    const existingMembers = [];
+    const newMembers = [];
 
-      for (const member of membersPage) {
-        let memberData = member;
-        let attributionTimestamp = null;
-
-        // Fetch attribution data if enabled
-        if (settings.includeAttribution) {
-          const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
-          if (fullMember) {
-            memberData = fullMember;
-            attributionTimestamp = syncStartTime;
-          }
-        }
-
-        rows.push(memberToRow(memberData, syncStartTime, attributionTimestamp));
+    for (const member of membersPage) {
+      if (existingMemberIdToRow[member.id]) {
+        existingMembers.push(member);
+      } else {
+        newMembers.push(member);
       }
+    }
 
-      // Batch write rows
-      if (rows.length > 0) {
-        const lastRow = sheet.getLastRow();
-        const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
-        sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
-        membersSynced += rows.length;
-        Logger.log(`Wrote ${rows.length} rows at row ${nextRow}, total: ${membersSynced}`);
-      }
-
-    } else {
-      // Quick update: update all from browse data, fetch attribution only for new members
-      const existingMembers = [];
-      const newMembers = [];
-
-      for (const member of membersPage) {
-        if (existingMemberIdToRow[member.id]) {
-          existingMembers.push(member);
-        } else {
-          newMembers.push(member);
-        }
-      }
-
-      // Update existing members with browse data only (no attribution fetch)
+    // Update existing members (unless in add-new-only mode)
+    if (!isAddNewOnly && existingMembers.length > 0) {
       for (const member of existingMembers) {
         const rowNumber = existingMemberIdToRow[member.id];
         const row = memberToRow(member, syncStartTime, null);
         sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
         membersSynced++;
       }
-      if (existingMembers.length > 0) {
-        Logger.log(`Updated ${existingMembers.length} existing members`);
-      }
+    } else if (isAddNewOnly) {
+      // Count existing members as synced even though we're not updating them
+      membersSynced += existingMembers.length;
+    }
 
-      // Add new members with attribution fetch
-      if (newMembers.length > 0) {
-        const rows = [];
-        for (const member of newMembers) {
-          let memberData = member;
-          let attributionTimestamp = null;
+    // Add new members with attribution fetch
+    if (newMembers.length > 0) {
+      const rows = newMembers.map(member => {
+        const { memberData, attributionTimestamp } = getMemberWithAttribution(member, settings, syncStartTime);
+        return memberToRow(memberData, syncStartTime, attributionTimestamp);
+      });
 
-          if (settings.includeAttribution) {
-            const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
-            if (fullMember) {
-              memberData = fullMember;
-              attributionTimestamp = syncStartTime;
-            }
-          }
-
-          rows.push(memberToRow(memberData, syncStartTime, attributionTimestamp));
-        }
-
-        const lastRow = sheet.getLastRow();
-        const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
-        sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
-        membersSynced += rows.length;
-        Logger.log(`Added ${rows.length} new members`);
-      }
+      const lastRow = sheet.getLastRow();
+      const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
+      sheet.getRange(nextRow, 1, rows.length, rows[0].length).setValues(rows);
+      membersSynced += rows.length;
+      Logger.log(`Added ${rows.length} new members`);
     }
 
     updateStatusRow(`Synced ${membersSynced} members...`);
@@ -907,13 +865,14 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
     hasMore = membersPage.length === MEMBERS_PAGE_SIZE;
 
     // Save state after each page to survive unexpected timeouts
-    saveState(afterId, membersSynced, isFullUpdate, syncStartTime);
+    saveState(afterId, membersSynced, isAddNewOnly, syncStartTime);
   }
 
   // Only get this far if we have processed every page of members and still have a little time left
-  // Remove members no longer in Ghost (rows with stale Last Sync Member timestamps)
+  // Remove members no longer in Ghost (unless in add-new-only mode). This requires that we've been updating
+  //  the `Last Sync Member` column as we go.
   let removedCount = 0;
-  if (!isFullUpdate && sheet.getLastRow() > HEADER_ROW) {
+  if (!isAddNewOnly && sheet.getLastRow() > HEADER_ROW) {
     Logger.log('Checking for removed members');
     const lastSyncMemberColumnIndex = GHOST_HEADERS.indexOf('Last Sync Member') + 1;
     const sheetData = sheet.getRange(DATA_START_ROW, lastSyncMemberColumnIndex, sheet.getLastRow() - HEADER_ROW, 1).getValues();
@@ -931,8 +890,8 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
       Logger.log(`Removing ${rowsToDelete.length} deleted members`);
       for (let i = rowsToDelete.length - 1; i >= 0; i--) {
         sheet.deleteRow(rowsToDelete[i]);
-        removedCount++;
       }
+      removedCount = rowsToDelete.length;
     }
   }
 
@@ -941,14 +900,14 @@ function processMembersSync(isFullUpdate, lastProcessedId = null, membersSynced 
   clearState();
   deleteContinuationTriggers();
   hideSpinner();
+  SpreadsheetApp.flush();
 
   // Brief pause to let Spreadsheet service recover after heavy sync
   Utilities.sleep(1000);
-  const lastSyncTime = new Date().toLocaleString();
-  const statusMsg = !isFullUpdate && removedCount > 0
-    ? `Synced ${membersSynced}, removed ${removedCount}. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`
-    : `Synced ${membersSynced} members. Completed ${isFullUpdate ? 'full' : 'quick'} sync: ${lastSyncTime}`;
-  updateStatusRow(statusMsg);
+
+  const syncMode = isAddNewOnly ? 'quick sync' : 'sync';
+  const removedMsg = removedCount > 0 ? `, removed ${removedCount}` : '';
+  updateStatusRow(`Synced ${membersSynced} members${removedMsg}. Completed ${syncMode}: ${new Date().toLocaleString()}`);
   sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
 }
 
@@ -963,13 +922,17 @@ function showHelp() {
   '❓ Help - Ghost Members Sync',
   `QUICK START:
 1. Ghost Sync → Settings (enter URL and API key)
-2. Ghost Sync → Full Update (first time)
+2. Ghost Sync → Sync
 3. Optional: Ghost Sync → Setup Daily Auto-Update
 
-UPDATE TYPES:
-• Quick Update: Only adds new members (faster)
-• Full Update: Replaces all data from Ghost
-• Daily Auto-Update: Runs Quick Update daily at midnight
+SYNC OPTIONS:
+• Sync: Adds new members, updates existing, removes deleted
+• Quick Sync: Only adds new members (doesn't update or remove)
+• Daily Auto-Update: Runs Sync daily at midnight
+
+When to use Quick Sync:
+• When you only care about seeing data for new members and don't need to remove deleted ones
+• Will be much faster if you are fetching attribution data
 
 GETTING YOUR API KEY:
 • Ghost Admin → Settings → Integrations
@@ -980,20 +943,12 @@ WHAT GETS SYNCED:
 ✓ Member info (email, name, status)
 ✓ Engagement metrics (opens, clicks)
 ✓ Attribution data (signup source)
-✓ Referrer tracking (Google, Twitter, etc.)
 ✓ Labels, newsletters, tiers
-
-PERMISSIONS:
-• Access to THIS spreadsheet only
-• External service access (Ghost API)
-• Script triggers (for daily auto-update)
 
 TROUBLESHOOTING:
 • Extensions → Apps Script → Executions for logs
-• Verify API key has colon (:)
-• Ghost URL should not have trailing slash
 
-Visit: ghost.org/docs/admin-api`,
+Visit: https://github.com/elidickinson/ghost-sync-google-sheets#readme`,
   ui.ButtonSet.OK
 );
 }
