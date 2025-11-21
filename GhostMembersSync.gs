@@ -765,7 +765,7 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
     syncStartTime = startTime;
   }
 
-  Logger.log(`${updateType}: afterId=${lastProcessedId || 'null'}, synced=${membersSynced}, syncStartTime=${syncStartTime}, includeAttribution=${settings.includeAttribution}`);
+  Logger.log(`${updateType}: afterId=${lastProcessedId || 'null'}, synced=${membersSynced}, syncStartTime=${syncStartTime}, includeAttribution=${settings.includeAttribution}, createdAfterFilter=${createdAfterFilter}`);
 
   if (!lastProcessedId) {
     // first round so show spinner and setup status row formatting
