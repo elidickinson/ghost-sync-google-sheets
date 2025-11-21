@@ -21,8 +21,8 @@ const GHOST_HEADERS = [
 ];
 
 const MEMBERS_PAGE_SIZE = 100;
-const MAX_EXECUTION_TIME = 4.5 * 60 * 1000; // There is a 6 minute limit but we must leave a buffer
-const API_REQUEST_DELAY_MS = 100; // Delay between API requests to go easy on the server
+const MAX_EXECUTION_TIME = 4.75 * 60 * 1000; // There is a 6 minute limit but we must leave a buffer
+const API_REQUEST_DELAY_MS = 100; // Delay between API requests to go easy on the server and the spreadhseet API
 const GHOST_MEMBERS_SHEET_NAME = 'Ghost Members';
 const SPINNER_ALT_TITLE = 'Ghost sync in progress...';
 const STATUS_ROW = 1; // Row 1 for status messages and spinner
@@ -41,7 +41,7 @@ function onOpen() {
     .addItem('⚙️ Settings', 'showSettings')
     .addSeparator()
     .addItem('⚡ Run Sync Now', 'syncWithUI')
-    .addItem('⚡ Quick Sync: new members only', 'addNewOnlyWithUI')
+    .addItem('Run Quick Sync (new members only)', 'addNewOnlyWithUI')
     .addSeparator()
     .addItem('📅 Setup Daily Auto-Update', 'setupDailyAutoUpdate')
     .addSeparator()
@@ -287,25 +287,30 @@ function base64UrlEncode(data) {
 
 const STATE_KEY_PREFIX = 'GHOST_SYNC_STATE_';
 
-function saveState(lastProcessedId, membersSynced, isAddNewOnly, syncStartTime) {
+function saveState(lastProcessedId, membersSynced, isAddNewOnly, syncStartTime, createdAfterFilter = null) {
   const props = PropertiesService.getScriptProperties();
   props.setProperty(STATE_KEY_PREFIX + 'LAST_ID', lastProcessedId || '');
   props.setProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT', membersSynced.toString());
   props.setProperty(STATE_KEY_PREFIX + 'IS_ADD_NEW_ONLY', isAddNewOnly.toString());
   props.setProperty(STATE_KEY_PREFIX + 'SYNC_START_TIME', syncStartTime.toString());
+  props.setProperty(STATE_KEY_PREFIX + 'CREATED_AFTER_FILTER', createdAfterFilter || '');
 }
 
 function loadState() {
   const props = PropertiesService.getScriptProperties();
   const lastId = props.getProperty(STATE_KEY_PREFIX + 'LAST_ID');
 
-  if (!lastId && lastId !== '') return null;
+  // If property doesn't exist, getProperty returns null (no saved state)
+  if (lastId === null) return null;
+
+  const createdAfter = props.getProperty(STATE_KEY_PREFIX + 'CREATED_AFTER_FILTER');
 
   return {
     lastProcessedId: lastId || null,
     membersSynced: parseInt(props.getProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT')) || 0,
     isAddNewOnly: props.getProperty(STATE_KEY_PREFIX + 'IS_ADD_NEW_ONLY') === 'true',
-    syncStartTime: parseInt(props.getProperty(STATE_KEY_PREFIX + 'SYNC_START_TIME')) || Date.now()
+    syncStartTime: parseInt(props.getProperty(STATE_KEY_PREFIX + 'SYNC_START_TIME')) || Date.now(),
+    createdAfterFilter: createdAfter || null
   };
 }
 
@@ -315,6 +320,7 @@ function clearState() {
   props.deleteProperty(STATE_KEY_PREFIX + 'SYNCED_COUNT');
   props.deleteProperty(STATE_KEY_PREFIX + 'IS_ADD_NEW_ONLY');
   props.deleteProperty(STATE_KEY_PREFIX + 'SYNC_START_TIME');
+  props.deleteProperty(STATE_KEY_PREFIX + 'CREATED_AFTER_FILTER');
 }
 
 function createContinuationTrigger() {
@@ -594,6 +600,8 @@ function validateSheetStructure(syncTypeName) {
   const expectedHeadersLength = GHOST_HEADERS.length;
   const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
 
+  // All 30 columns are always created by setupSheet() regardless of attribution setting.
+  // Only the data rows vary: 22 columns when attribution is disabled, 30 when enabled.
   if (headers.length >= expectedHeadersLength &&
       headers[0] === GHOST_HEADERS[0] &&
       headers[1] === GHOST_HEADERS[1] &&
@@ -658,7 +666,7 @@ function continueSyncFromTrigger() {
   Logger.log(`Resuming: afterId=${state.lastProcessedId}, synced=${state.membersSynced}`);
 
   try {
-    processMembersSync(state.isAddNewOnly, state.lastProcessedId, state.membersSynced, state.syncStartTime);
+    processMembersSync(state.isAddNewOnly, state.lastProcessedId, state.membersSynced, state.syncStartTime, state.createdAfterFilter);
   } catch (e) {
     Logger.log(`Error: ${e.message}`);
     clearState();
@@ -747,7 +755,7 @@ function getMemberWithAttribution(member, settings, syncStartTime) {
     : { memberData: member, attributionTimestamp: null };
 }
 
-function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced = 0, syncStartTime = null) {
+function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced = 0, syncStartTime = null, createdAfterFilter = null) {
   const settings = getSettings();
   const sheet = getOrCreateSheet();
   const startTime = Date.now();
@@ -768,10 +776,9 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
   }
 
   let existingMemberIdToRow = {};
-  let createdAfterFilter = null;
 
-  // On first run, build map of member IDs to row numbers
-  if (!lastProcessedId && sheet.getLastRow() > HEADER_ROW) {
+  // Build map of member IDs to row numbers
+  if (sheet.getLastRow() > HEADER_ROW) {
     updateStatusRow('Checking existing members...');
     const numRows = sheet.getLastRow() - HEADER_ROW;
     const memberIds = sheet.getRange(DATA_START_ROW, 1, numRows, 1).getValues();
@@ -781,17 +788,18 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
       }
     }
     Logger.log(`Found ${Object.keys(existingMemberIdToRow).length} existing members`);
+  }
 
-    // For Quick Sync, find max Created At to filter API query
-    if (isAddNewOnly) {
-      const createdAtColumnIndex = GHOST_HEADERS.indexOf('Created At') + 1;
-      const createdAtDates = sheet.getRange(DATA_START_ROW, createdAtColumnIndex, numRows, 1).getValues();
-      const validDates = createdAtDates.map(row => row[0]).filter(d => d);
-      if (validDates.length > 0) {
-        const maxDate = validDates.reduce((max, d) => d > max ? d : max);
-        createdAfterFilter = new Date(maxDate).toISOString();
-        Logger.log(`Quick Sync: filtering for members created after ${createdAfterFilter}`);
-      }
+  // On first run, for Quick Sync, find max Created At to filter API query
+  if (!createdAfterFilter && !lastProcessedId && isAddNewOnly && sheet.getLastRow() > HEADER_ROW) {
+    const createdAtColumnIndex = GHOST_HEADERS.indexOf('Created At') + 1;
+    const numRows = sheet.getLastRow() - HEADER_ROW;
+    const createdAtDates = sheet.getRange(DATA_START_ROW, createdAtColumnIndex, numRows, 1).getValues();
+    const validDates = createdAtDates.map(row => row[0]).filter(d => d);
+    if (validDates.length > 0) {
+      const maxDate = validDates.reduce((max, d) => d > max ? d : max);
+      createdAfterFilter = new Date(maxDate).toISOString();
+      Logger.log(`Quick Sync: filtering for members created after ${createdAfterFilter}`);
     }
   }
 
@@ -802,7 +810,7 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
     // Check if we're approaching time limit
     if (Date.now() - startTime > MAX_EXECUTION_TIME) {
       Logger.log(`Time limit: pausing at afterId=${afterId}, synced=${membersSynced}`);
-      saveState(afterId, membersSynced, isAddNewOnly, syncStartTime);
+      saveState(afterId, membersSynced, isAddNewOnly, syncStartTime, createdAfterFilter);
       createContinuationTrigger();
       updateStatusRow(`On hold after syncing ${membersSynced} members and will resume in 1 minute...`);
       return;  // bail from this function early
@@ -835,6 +843,11 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
     if (!isAddNewOnly && existingMembers.length > 0) {
       for (const member of existingMembers) {
         const rowNumber = existingMemberIdToRow[member.id];
+        // NOTE: Attribution is NOT updated for existing members (always null).
+        // This is intentional to avoid expensive per-member API calls on every sync.
+        // Consequence: If attribution is enabled after a member exists, or if attribution
+        // data changes in Ghost, existing members won't get the updated attribution data.
+        // Only new members added while attribution is enabled will have attribution data.
         const row = memberToRow(member, syncStartTime, null);
         sheet.getRange(rowNumber, 1, 1, row.length).setValues([row]);
         membersSynced++;
@@ -865,12 +878,13 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
     hasMore = membersPage.length === MEMBERS_PAGE_SIZE;
 
     // Save state after each page to survive unexpected timeouts
-    saveState(afterId, membersSynced, isAddNewOnly, syncStartTime);
+    saveState(afterId, membersSynced, isAddNewOnly, syncStartTime, createdAfterFilter);
   }
 
-  // Only get this far if we have processed every page of members and still have a little time left
-  // Remove members no longer in Ghost (unless in add-new-only mode). This requires that we've been updating
-  //  the `Last Sync Member` column as we go.
+  // Only get this far if we have processed every page of members.
+
+  // Remove members no longer in Ghost (unless in add-new-only mode). This relies on us having updated
+  // the `Last Sync Member` column as we go.
   let removedCount = 0;
   if (!isAddNewOnly && sheet.getLastRow() > HEADER_ROW) {
     Logger.log('Checking for removed members');
@@ -881,6 +895,15 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
 
     for (let i = 0; i < sheetData.length; i++) {
       const lastSyncMemberValue = sheetData[i][0];
+      // EDGE CASE: Rows without a Last Sync Member timestamp (empty/null) won't be deleted.
+      // This can happen if:
+      //   - User manually added a row to the sheet
+      //   - A previous sync failed partway through
+      //   - The row predates when this column was added
+      //   - Manual editing cleared the value
+      // Consequence: These "orphan" rows will persist in the sheet even if the member
+      // is deleted from Ghost. This is a rare edge case and safer than accidentally
+      // deleting manually added rows.
       if (lastSyncMemberValue && lastSyncMemberValue < syncStartTimeIso) {
         rowsToDelete.push(i + DATA_START_ROW);
       }
