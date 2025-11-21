@@ -580,89 +580,64 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
 // UI FUNCTIONS
 // ============================================
 
-function syncWithUI() {
+/**
+ * Validates sheet structure for sync operations
+ * @returns {boolean} true if valid, false if invalid (shows alert)
+ */
+function validateSheetStructure(syncTypeName) {
   const sheet = getOrCreateSheet();
 
-  // Check if sheet has proper structure (headers should be in row 2)
-  if (sheet.getLastRow() >= HEADER_ROW) {
-    const headers = sheet.getRange(HEADER_ROW, 1, 1, sheet.getLastColumn()).getValues()[0];
+  if (sheet.getLastRow() < HEADER_ROW) return true;
 
-    // Expected headers count
-    const expectedHeadersLength = GHOST_HEADERS.length;
-    const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
+  const headers = sheet.getRange(HEADER_ROW, 1, 1, sheet.getLastColumn()).getValues()[0];
+  const expectedHeadersLength = GHOST_HEADERS.length;
+  const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
 
-    // Check key columns including Last Sync Member (required for sync)
-    if (headers.length < expectedHeadersLength ||
-        headers[0] !== GHOST_HEADERS[0] ||
-        headers[1] !== GHOST_HEADERS[1] ||
-        headers[lastSyncMemberIndex] !== GHOST_HEADERS[lastSyncMemberIndex]) {
-
-      const ui = SpreadsheetApp.getUi();
-      ui.alert(
-        '⚠️ Sync Not Available',
-        `The sheet doesn't have the correct column structure.\n\nExpected: ${expectedHeadersLength} columns with "${GHOST_HEADERS[0]}", "${GHOST_HEADERS[1]}", and "${GHOST_HEADERS[lastSyncMemberIndex]}"\nFound: ${headers.length} columns with "${headers[0] || 'Empty'}", "${headers[1] || 'Empty'}", and "${headers[lastSyncMemberIndex] || 'Missing'}"\n\nPlease delete the sheet and run Sync again to recreate it with the correct structure.`,
-        ui.ButtonSet.OK
-      );
-      return;
-    }
+  if (headers.length >= expectedHeadersLength &&
+      headers[0] === GHOST_HEADERS[0] &&
+      headers[1] === GHOST_HEADERS[1] &&
+      headers[lastSyncMemberIndex] === GHOST_HEADERS[lastSyncMemberIndex]) {
+    return true;
   }
 
-  syncMembersWithUI(false); // false = not add-new-only mode
+  SpreadsheetApp.getUi().alert(
+    `⚠️ ${syncTypeName} Not Available`,
+    `The sheet doesn't have the correct column structure.\n\nExpected: ${expectedHeadersLength} columns with "${GHOST_HEADERS[0]}", "${GHOST_HEADERS[1]}", and "${GHOST_HEADERS[lastSyncMemberIndex]}"\nFound: ${headers.length} columns with "${headers[0] || 'Empty'}", "${headers[1] || 'Empty'}", and "${headers[lastSyncMemberIndex] || 'Missing'}"\n\nPlease delete the sheet and run Sync again to recreate it with the correct structure.`,
+    SpreadsheetApp.getUi().ButtonSet.OK
+  );
+  return false;
+}
+
+function syncWithUI() {
+  if (!validateSheetStructure('Sync')) return;
+  syncMembersWithUI(false);
 }
 
 function addNewOnlyWithUI() {
-  const sheet = getOrCreateSheet();
-
-  // Check if sheet has proper structure (headers should be in row 2)
-  if (sheet.getLastRow() >= HEADER_ROW) {
-    const headers = sheet.getRange(HEADER_ROW, 1, 1, sheet.getLastColumn()).getValues()[0];
-
-    // Expected headers count
-    const expectedHeadersLength = GHOST_HEADERS.length;
-    const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
-
-    // Check key columns including Last Sync Member (required for sync)
-    if (headers.length < expectedHeadersLength ||
-        headers[0] !== GHOST_HEADERS[0] ||
-        headers[1] !== GHOST_HEADERS[1] ||
-        headers[lastSyncMemberIndex] !== GHOST_HEADERS[lastSyncMemberIndex]) {
-
-      const ui = SpreadsheetApp.getUi();
-      ui.alert(
-        '⚠️ Quick Sync Not Available',
-        `The sheet doesn't have the correct column structure.\n\nExpected: ${expectedHeadersLength} columns with "${GHOST_HEADERS[0]}", "${GHOST_HEADERS[1]}", and "${GHOST_HEADERS[lastSyncMemberIndex]}"\nFound: ${headers.length} columns with "${headers[0] || 'Empty'}", "${headers[1] || 'Empty'}", and "${headers[lastSyncMemberIndex] || 'Missing'}"\n\nPlease delete the sheet and run Sync again to recreate it with the correct structure.`,
-        ui.ButtonSet.OK
-      );
-      return;
-    }
-  }
-
-  syncMembersWithUI(true); // true = add-new-only mode
+  if (!validateSheetStructure('Quick Sync')) return;
+  syncMembersWithUI(true);
 }
 
 function cancelUpdate() {
+  const ui = SpreadsheetApp.getUi();
   const state = loadState();
   const triggers = ScriptApp.getProjectTriggers();
   const hasTriggers = triggers.some(t => t.getHandlerFunction() === 'continueSyncFromTrigger');
 
   if (!state && !hasTriggers) {
-    SpreadsheetApp.getUi().alert(
-      '🛑 Cancel Update',
-      'No updates in progress',
-      SpreadsheetApp.getUi().ButtonSet.OK
-    );
+    ui.alert('🛑 Cancel Update', 'No updates in progress', ui.ButtonSet.OK);
     return;
   }
 
   deleteContinuationTriggers();
   clearState();
   hideSpinner();
-  updateStatusRow("Update cancelled")
+  updateStatusRow("Update cancelled");
 
-  SpreadsheetApp.getUi().alert(
+  ui.alert(
     '✅ Update Cancelled',
     'Any in-progress sync has been cancelled and continuation triggers removed.',
-    SpreadsheetApp.getUi().ButtonSet.OK
+    ui.ButtonSet.OK
   );
 }
 
@@ -759,6 +734,21 @@ function hideSpinner() {
   }
 }
 
+/**
+ * Fetches member with attribution data if settings enable it
+ * @returns {Object} Object with memberData and attributionTimestamp
+ */
+function getMemberWithAttribution(member, settings, syncStartTime) {
+  if (!settings.includeAttribution) {
+    return { memberData: member, attributionTimestamp: null };
+  }
+
+  const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
+  return fullMember
+    ? { memberData: fullMember, attributionTimestamp: syncStartTime }
+    : { memberData: member, attributionTimestamp: null };
+}
+
 function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced = 0, syncStartTime = null) {
   const settings = getSettings();
   const sheet = getOrCreateSheet();
@@ -842,21 +832,10 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
 
     // Add new members with attribution fetch
     if (newMembers.length > 0) {
-      const rows = [];
-      for (const member of newMembers) {
-        let memberData = member;
-        let attributionTimestamp = null;
-
-        if (settings.includeAttribution) {
-          const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
-          if (fullMember) {
-            memberData = fullMember;
-            attributionTimestamp = syncStartTime;
-          }
-        }
-
-        rows.push(memberToRow(memberData, syncStartTime, attributionTimestamp));
-      }
+      const rows = newMembers.map(member => {
+        const { memberData, attributionTimestamp } = getMemberWithAttribution(member, settings, syncStartTime);
+        return memberToRow(memberData, syncStartTime, attributionTimestamp);
+      });
 
       const lastRow = sheet.getLastRow();
       const nextRow = lastRow < HEADER_ROW ? DATA_START_ROW : lastRow + 1;
@@ -896,8 +875,8 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
       Logger.log(`Removing ${rowsToDelete.length} deleted members`);
       for (let i = rowsToDelete.length - 1; i >= 0; i--) {
         sheet.deleteRow(rowsToDelete[i]);
-        removedCount++;
       }
+      removedCount = rowsToDelete.length;
     }
   }
 
@@ -909,12 +888,10 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
 
   // Brief pause to let Spreadsheet service recover after heavy sync
   Utilities.sleep(1000);
-  const lastSyncTime = new Date().toLocaleString();
+
   const syncMode = isAddNewOnly ? 'quick sync' : 'sync';
-  const statusMsg = !isAddNewOnly && removedCount > 0
-    ? `Synced ${membersSynced}, removed ${removedCount}. Completed ${syncMode}: ${lastSyncTime}`
-    : `Synced ${membersSynced} members. Completed ${syncMode}: ${lastSyncTime}`;
-  updateStatusRow(statusMsg);
+  const removedMsg = removedCount > 0 ? `, removed ${removedCount}` : '';
+  updateStatusRow(`Synced ${membersSynced} members${removedMsg}. Completed ${syncMode}: ${new Date().toLocaleString()}`);
   sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
 
   try {
