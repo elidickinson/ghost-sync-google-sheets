@@ -17,7 +17,7 @@ const GHOST_HEADERS = [
   'Geolocation', 'Unsubscribe URL', 'Last Seen At', 'Last Sync Member',
   'Attribution ID', 'Attribution URL', 'Attribution Type',
   'Attribution Title', 'Referrer Source', 'Referrer Medium', 'Referrer URL',
-  'Last Sync Attribution'
+  'Last Sync Attribution', 'Deleted At'
 ];
 
 const MEMBERS_PAGE_SIZE = 100;
@@ -580,6 +580,9 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
     );
   }
 
+  // Deleted At field - empty for active members from API
+  rowData.push('');
+
   return rowData;
 }
 
@@ -883,43 +886,45 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
 
   // Only get this far if we have processed every page of members.
 
-  // Remove members no longer in Ghost (unless in add-new-only mode). This relies on us having updated
+  // Soft delete members no longer in Ghost (unless in add-new-only mode). This relies on us having updated
   // the `Last Sync Member` column as we go.
-  let removedCount = 0;
+  let deletedCount = 0;
   if (!isAddNewOnly && sheet.getLastRow() > HEADER_ROW) {
-    Logger.log('Checking for removed members');
+    Logger.log('Checking for deleted members');
     const lastSyncMemberColumnIndex = GHOST_HEADERS.indexOf('Last Sync Member') + 1;
+    const deletedAtColumnIndex = GHOST_HEADERS.indexOf('Deleted At') + 1;
     const sheetData = sheet.getRange(DATA_START_ROW, lastSyncMemberColumnIndex, sheet.getLastRow() - HEADER_ROW, 1).getValues();
-    const rowsToDelete = [];
+    const rowsToMarkDeleted = [];
     const syncStartTimeIso = new Date(syncStartTime).toISOString();
 
     for (let i = 0; i < sheetData.length; i++) {
       const lastSyncMemberValue = sheetData[i][0];
-      // EDGE CASE: Rows without a Last Sync Member timestamp (empty/null) won't be deleted.
+      // EDGE CASE: Rows without a Last Sync Member timestamp (empty/null) won't be marked as deleted.
       // This can happen if:
       //   - User manually added a row to the sheet
       //   - A previous sync failed partway through
       //   - The row predates when this column was added
       //   - Manual editing cleared the value
-      // Consequence: These "orphan" rows will persist in the sheet even if the member
-      // is deleted from Ghost. This is a rare edge case and safer than accidentally
-      // deleting manually added rows.
+      // Consequence: These "orphan" rows will persist in the sheet without being marked deleted
+      // even if the member is deleted from Ghost. This is a rare edge case and safer than
+      // accidentally marking manually added rows as deleted.
       if (lastSyncMemberValue && lastSyncMemberValue < syncStartTimeIso) {
-        rowsToDelete.push(i + DATA_START_ROW);
+        rowsToMarkDeleted.push(i + DATA_START_ROW);
       }
     }
 
-    if (rowsToDelete.length > 0) {
-      Logger.log(`Removing ${rowsToDelete.length} deleted members`);
-      for (let i = rowsToDelete.length - 1; i >= 0; i--) {
-        sheet.deleteRow(rowsToDelete[i]);
+    if (rowsToMarkDeleted.length > 0) {
+      Logger.log(`Marking ${rowsToMarkDeleted.length} members as deleted`);
+      const deletedTimestamp = new Date(syncStartTime).toISOString();
+      for (const rowNum of rowsToMarkDeleted) {
+        sheet.getRange(rowNum, deletedAtColumnIndex).setValue(deletedTimestamp);
       }
-      removedCount = rowsToDelete.length;
+      deletedCount = rowsToMarkDeleted.length;
     }
   }
 
   // Cleanup on completion
-  Logger.log(`Complete: synced=${membersSynced}, removed=${removedCount}, time=${Date.now() - startTime}ms`);
+  Logger.log(`Complete: synced=${membersSynced}, marked_deleted=${deletedCount}, time=${Date.now() - startTime}ms`);
   clearState();
   deleteContinuationTriggers();
   hideSpinner();
@@ -929,8 +934,8 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
   Utilities.sleep(1000);
 
   const syncMode = isAddNewOnly ? 'quick sync' : 'sync';
-  const removedMsg = removedCount > 0 ? `, removed ${removedCount}` : '';
-  updateStatusRow(`Synced ${membersSynced} members${removedMsg}. Completed ${syncMode}: ${new Date().toLocaleString()}`);
+  const deletedMsg = deletedCount > 0 ? `, marked ${deletedCount} as deleted` : '';
+  updateStatusRow(`Synced ${membersSynced} members${deletedMsg}. Completed ${syncMode}: ${new Date().toLocaleString()}`);
   sheet.getRange(STATUS_ROW, 1, 1, 20).clearFormat();
 }
 
@@ -949,9 +954,13 @@ function showHelp() {
 3. Optional: Ghost Sync → Setup Daily Auto-Update
 
 SYNC OPTIONS:
-• Sync: Adds new members, updates existing, removes deleted
-• Quick Sync: Only adds new members (doesn't update or remove)
+• Sync: Adds new members, updates existing, marks deleted members
+• Quick Sync: Only adds new members (doesn't update or mark deletions)
 • Daily Auto-Update: Runs Sync daily at midnight
+
+NOTE: Deleted members are marked with a "Deleted At" timestamp but
+rows are preserved. If someone re-subscribes with the same email,
+a new row will be created (Ghost assigns a new Member ID).
 
 When to use Quick Sync:
 • When you only care about seeing data for new members and don't need to remove deleted ones
