@@ -38,6 +38,15 @@ The first time you use any Ghost Sync function, Google will ask you to authorize
 5. Grant permissions to the script: click **Select All** then scroll to the bottom and **Continue.**
    - The script only requests permission to edit the current Sheet, not anything else in your Google account.
 
+## Dependencies
+
+This project uses [uv](https://github.com/astral-sh/uv) for dependency management.
+
+Install dependencies:
+```bash
+uv sync
+```
+
 ## Setup
 
 1. Click **Ghost Sync → Settings**
