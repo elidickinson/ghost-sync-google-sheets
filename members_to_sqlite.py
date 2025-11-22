@@ -17,6 +17,8 @@ import hashlib
 import base64
 import requests
 import sqlite3
+import logging
+import sys
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import os
@@ -24,6 +26,14 @@ from dotenv import load_dotenv
 
 # Load environment variables from .env file
 load_dotenv()
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+logger = logging.getLogger(__name__)
 
 
 # ============================================
@@ -152,23 +162,31 @@ def setup_database():
     # Read schema from file
     with open(SCHEMA_FILE, 'r') as f:
         schema_sql = f.read()
-    
+
     # Connect to database and execute schema
     conn = sqlite3.connect(DATABASE_FILE)
+
+    # Use executescript to handle the entire schema at once
+    # This properly handles multi-line statements and comments
+    conn.executescript(schema_sql)
+
+    # Create sync_runs table to track sync history
     cursor = conn.cursor()
-    
-    # Execute the schema (split by semicolons to handle multiple statements)
-    statements = [stmt.strip() for stmt in schema_sql.split(';') if stmt.strip()]
-    
-    for statement in statements:
-        # Skip comments and empty statements
-        if statement.startswith('--') or not statement.strip():
-            continue
-        cursor.execute(statement)
-    
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS sync_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            status TEXT NOT NULL,
+            members_fetched INTEGER DEFAULT 0,
+            members_saved INTEGER DEFAULT 0,
+            error_message TEXT
+        )
+    ''')
+
     conn.commit()
     conn.close()
-    print(f"Database '{DATABASE_FILE}' created successfully using schema.sql")
+    logger.info(f"Database '{DATABASE_FILE}' initialized successfully")
 
 
 # ============================================
@@ -403,85 +421,91 @@ def fetch_all_members() -> List[Dict[str, Any]]:
     """Fetch all members from Ghost API using pagination"""
     all_members = []
     page = 1
-    
-    print("Fetching members from Ghost API...")
-    
+
+    logger.info("Fetching members from Ghost API...")
+
     while True:
         endpoint = f'/ghost/api/admin/members/?limit={MEMBERS_PAGE_SIZE}&include=email_recipients,subscriptions,newsletters,tiers&page={page}'
-        
+
         try:
             response = make_ghost_request(endpoint)
             members = response.get('members', [])
-            
+
             if not members:
                 break
-                
+
             all_members.extend(members)
-            print(f"Fetched page {page}, {len(members)} members (total: {len(all_members)})")
-            
+            logger.info(f"Fetched page {page}: {len(members)} members (total: {len(all_members)})")
+
             # Check if there are more pages
             meta = response.get('meta', {})
             pagination = meta.get('pagination', {})
-            
+
             if pagination.get('page', 1) >= pagination.get('pages', 1):
                 break
-                
+
             page += 1
-            
+
         except Exception as e:
-            print(f"Error fetching page {page}: {e}")
-            break
-    
-    print(f"Total members fetched: {len(all_members)}")
+            logger.error(f"Error fetching page {page}: {e}")
+            raise  # Re-raise to be handled by caller
+
+    logger.info(f"Total members fetched: {len(all_members)}")
     return all_members
 
 
-def save_members_to_database(members: List[Dict[str, Any]]) -> None:
+def save_members_to_database(members: List[Dict[str, Any]]) -> int:
     """Save members data to SQLite database"""
     conn = sqlite3.connect(DATABASE_FILE)
     cursor = conn.cursor()
-    
-    print(f"Saving {len(members)} members to database...")
-    
+
+    logger.info(f"Saving {len(members)} members to database...")
+
+    saved_count = 0
     for i, member in enumerate(members):
         try:
             # Insert member
             insert_member(cursor, member)
-            
+
             # Insert labels
             labels = member.get('labels', [])
             if labels:
                 insert_labels(cursor, member['id'], labels)
-            
+
             # Insert newsletters
             newsletters = member.get('newsletters', [])
             if newsletters:
                 insert_newsletters(cursor, member['id'], newsletters)
-            
+
             # Insert subscriptions
             subscriptions = member.get('subscriptions', [])
             if subscriptions:
                 insert_subscriptions(cursor, member['id'], subscriptions)
-            
+
             # Insert tiers
             tiers = member.get('tiers', [])
             if tiers:
                 insert_tiers(cursor, member['id'], tiers)
-            
+
             # Insert email recipients
             email_recipients = member.get('email_recipients', [])
             if email_recipients:
                 insert_email_recipients(cursor, member['id'], email_recipients)
-            
+
+            saved_count += 1
+
             if (i + 1) % 100 == 0:
-                print(f"Processed {i + 1}/{len(members)} members")
-                
+                logger.info(f"Processed {i + 1}/{len(members)} members")
+                conn.commit()  # Commit in batches
+
         except Exception as e:
-            print(f"Error processing member {member.get('id', 'unknown')}: {e}")
-    
+            logger.error(f"Error processing member {member.get('id', 'unknown')}: {e}")
+            # Continue processing other members instead of failing completely
+
     conn.commit()
     conn.close()
-    print("All members saved to database successfully")
+    logger.info(f"Successfully saved {saved_count}/{len(members)} members to database")
+    return saved_count
 
 
 # ============================================
@@ -490,28 +514,82 @@ def save_members_to_database(members: List[Dict[str, Any]]) -> None:
 
 def main():
     """Main execution function"""
-    if not ADMIN_API_KEY:
-        print("❌ Error: Please set your ADMIN_API_KEY in the configuration section")
-        return
-    
+    if not GHOST_URL or not ADMIN_API_KEY:
+        logger.error("Missing configuration: GHOST_URL and ADMIN_API_KEY must be set in .env file")
+        sys.exit(1)
+
+    # Track sync run
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
+
+    # Setup database first
     try:
-        # Setup database
         setup_database()
-        
-        # Fetch all members
-        members = fetch_all_members()
-        
-        if not members:
-            print("No members found to process")
-            return
-        
-        # Save to database
-        save_members_to_database(members)
-        
-        print(f"\n✅ Success! {len(members)} members have been saved to '{DATABASE_FILE}'")
-        
     except Exception as e:
-        print(f"\n❌ Error: {e}")
+        logger.error(f"Failed to initialize database: {e}")
+        sys.exit(1)
+
+    # Start tracking this sync run
+    started_at = datetime.utcnow().isoformat()
+    cursor.execute(
+        'INSERT INTO sync_runs (started_at, status) VALUES (?, ?)',
+        (started_at, 'running')
+    )
+    conn.commit()
+    sync_run_id = cursor.lastrowid
+
+    try:
+        # Fetch all members
+        logger.info("Starting sync process...")
+        members = fetch_all_members()
+
+        if not members:
+            logger.warning("No members found to process")
+            cursor.execute(
+                'UPDATE sync_runs SET completed_at = ?, status = ?, members_fetched = 0 WHERE id = ?',
+                (datetime.utcnow().isoformat(), 'completed', sync_run_id)
+            )
+            conn.commit()
+            conn.close()
+            return
+
+        # Update sync run with fetched count
+        cursor.execute(
+            'UPDATE sync_runs SET members_fetched = ? WHERE id = ?',
+            (len(members), sync_run_id)
+        )
+        conn.commit()
+        conn.close()
+
+        # Save to database
+        saved_count = save_members_to_database(members)
+
+        # Update sync run as completed
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE sync_runs SET completed_at = ?, status = ?, members_saved = ? WHERE id = ?',
+            (datetime.utcnow().isoformat(), 'completed', saved_count, sync_run_id)
+        )
+        conn.commit()
+        conn.close()
+
+        logger.info(f"✅ Sync completed successfully! {saved_count} members saved to '{DATABASE_FILE}'")
+
+    except Exception as e:
+        logger.error(f"Sync failed: {e}", exc_info=True)
+
+        # Update sync run as failed
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+        cursor.execute(
+            'UPDATE sync_runs SET completed_at = ?, status = ?, error_message = ? WHERE id = ?',
+            (datetime.utcnow().isoformat(), 'failed', str(e), sync_run_id)
+        )
+        conn.commit()
+        conn.close()
+
+        sys.exit(1)
 
 
 if __name__ == '__main__':

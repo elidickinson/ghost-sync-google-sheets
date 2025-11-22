@@ -49,6 +49,9 @@ Records of emails sent to each member with delivery and engagement status.
 ### `emails`
 Details of email campaigns including subject, content stats, and delivery metrics (without full HTML/Plaintext content to reduce size).
 
+### `sync_runs`
+Tracks each sync operation with start/end times, status, and statistics. Useful for monitoring and debugging sync jobs.
+
 ## Setup
 
 1. **Install uv** (if not already installed):
@@ -93,10 +96,23 @@ uv run python members_to_sqlite.py
 ```
 
 The script will:
-1. Create a SQLite database file named `ghost_members.db`
+1. Create a SQLite database file named `ghost_members.db` (if it doesn't exist)
 2. Fetch all members, subscriptions, newsletters, tiers, and email data from your Ghost site
-3. Store the data in normalized tables
+3. Store the data in normalized tables (updates existing records)
 4. Show progress updates during the process
+5. Track the sync run in the `sync_runs` table
+
+### Running Daily Updates
+
+The script is designed to be run repeatedly (e.g., daily via cron job). It will:
+- Update existing member records with new data
+- Add any new members
+- Track each sync run with timestamps and statistics
+
+Example cron job for daily sync at 2 AM:
+```bash
+0 2 * * * cd /path/to/ghost-sync-google-sheets && uv run python members_to_sqlite.py >> sync.log 2>&1
+```
 
 ## Output
 
@@ -159,6 +175,33 @@ You can modify these settings in the script:
 
 - `MEMBERS_PAGE_SIZE`: Number of members to fetch per API request (default: 100)
 - `DATABASE_FILE`: Output database filename (default: 'ghost_members.db')
+
+## Running Tests
+
+The project includes strategic tests to ensure core functionality works correctly.
+
+Install test dependencies:
+```bash
+uv sync --extra dev
+```
+
+Run the tests:
+```bash
+uv run pytest test_members_to_sqlite.py -v
+```
+
+Run tests with coverage:
+```bash
+uv run pytest test_members_to_sqlite.py -v --cov=members_to_sqlite
+```
+
+The tests cover:
+- JWT token generation and validation
+- Database setup and schema verification
+- Member data insertion and updates
+- Idempotency (safe to run multiple times)
+- API pagination handling
+- Error handling and resilience
 
 ## Security Notes
 
