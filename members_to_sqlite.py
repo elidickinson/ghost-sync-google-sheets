@@ -180,6 +180,31 @@ def make_ghost_request(
     raise Exception("Unexpected error in request retry logic")
 
 
+def fetch_member_attribution(member_id: str) -> Optional[Dict[str, Any]]:
+    """
+    Fetch attribution data for a single member using the read endpoint
+
+    Args:
+        member_id: Ghost member ID
+
+    Returns:
+        Attribution dict or None if not available
+    """
+    try:
+        endpoint = f"/ghost/api/admin/members/{member_id}/"
+        response = make_ghost_request(endpoint)
+
+        members = response.get("members", [])
+        if members and len(members) > 0:
+            member = members[0]
+            return member.get("attribution")
+
+        return None
+    except Exception as e:
+        logger.warning(f"Failed to fetch attribution for member {member_id}: {e}")
+        return None
+
+
 # ============================================
 # DATABASE SETUP
 # ============================================
@@ -208,13 +233,28 @@ def setup_database():
 # ============================================
 
 
-def insert_member(cursor: sqlite3.Cursor, member: Dict[str, Any]) -> None:
-    """Insert or update a member record, restoring soft-deleted members if they reappear"""
+def insert_member(cursor: sqlite3.Cursor, member: Dict[str, Any], attribution: Optional[Dict[str, Any]] = None) -> None:
+    """Insert or update a member record, restoring soft-deleted members if they reappear
+
+    Args:
+        cursor: Database cursor
+        member: Member data from Ghost API
+        attribution: Attribution data (optional). If None, attribution fields will be preserved or set to NULL for new members.
+    """
     # Handle email_suppression as JSON string
     email_suppression = member.get("email_suppression")
     email_suppression_json = (
         json.dumps(email_suppression) if email_suppression else None
     )
+
+    # Extract attribution fields if provided
+    attribution_id = attribution.get("id") if attribution else None
+    attribution_type = attribution.get("type") if attribution else None
+    attribution_url = attribution.get("url") if attribution else None
+    attribution_title = attribution.get("title") if attribution else None
+    attribution_referrer_source = attribution.get("referrer_source") if attribution else None
+    attribution_referrer_medium = attribution.get("referrer_medium") if attribution else None
+    attribution_referrer_url = attribution.get("referrer_url") if attribution else None
 
     # Check if member exists and is soft deleted
     cursor.execute("SELECT deleted_at FROM members WHERE id = ?", (member.get("id"),))
@@ -223,72 +263,179 @@ def insert_member(cursor: sqlite3.Cursor, member: Dict[str, Any]) -> None:
     if existing and existing[0] is not None:
         # Member was soft deleted, restore them
         logger.info(f"Restoring previously deleted member: {member.get('email')}")
-        cursor.execute(
-            """
-            UPDATE members SET 
-                uuid = ?, email = ?, name = ?, note = ?, geolocation = ?, subscribed = ?,
-                created_at = ?, updated_at = ?, avatar_image = ?, comped = ?,
-                email_count = ?, email_opened_count = ?, email_open_rate = ?,
-                status = ?, last_seen_at = ?, unsubscribe_url = ?, email_suppression = ?,
-                deleted_at = NULL
-            WHERE id = ?
-            """,
-            (
-                member.get("uuid"),
-                member.get("email"),
-                member.get("name"),
-                member.get("note"),
-                member.get("geolocation"),
-                member.get("subscribed"),
-                member.get("created_at"),
-                member.get("updated_at"),
-                member.get("avatar_image"),
-                member.get("comped"),
-                member.get("email_count"),
-                member.get("email_opened_count"),
-                member.get("email_open_rate"),
-                member.get("status"),
-                member.get("last_seen_at"),
-                member.get("unsubscribe_url"),
-                email_suppression_json,
-                member.get("id"),
-            ),
-        )
+        # For restored members, only update attribution if it was provided
+        if attribution is not None:
+            cursor.execute(
+                """
+                UPDATE members SET
+                    uuid = ?, email = ?, name = ?, note = ?, geolocation = ?, subscribed = ?,
+                    created_at = ?, updated_at = ?, avatar_image = ?, comped = ?,
+                    email_count = ?, email_opened_count = ?, email_open_rate = ?,
+                    status = ?, last_seen_at = ?, unsubscribe_url = ?, email_suppression = ?,
+                    attribution_id = ?, attribution_type = ?, attribution_url = ?, attribution_title = ?,
+                    attribution_referrer_source = ?, attribution_referrer_medium = ?, attribution_referrer_url = ?,
+                    deleted_at = NULL
+                WHERE id = ?
+                """,
+                (
+                    member.get("uuid"),
+                    member.get("email"),
+                    member.get("name"),
+                    member.get("note"),
+                    member.get("geolocation"),
+                    member.get("subscribed"),
+                    member.get("created_at"),
+                    member.get("updated_at"),
+                    member.get("avatar_image"),
+                    member.get("comped"),
+                    member.get("email_count"),
+                    member.get("email_opened_count"),
+                    member.get("email_open_rate"),
+                    member.get("status"),
+                    member.get("last_seen_at"),
+                    member.get("unsubscribe_url"),
+                    email_suppression_json,
+                    attribution_id,
+                    attribution_type,
+                    attribution_url,
+                    attribution_title,
+                    attribution_referrer_source,
+                    attribution_referrer_medium,
+                    attribution_referrer_url,
+                    member.get("id"),
+                ),
+            )
+        else:
+            # Don't update attribution fields if not provided
+            cursor.execute(
+                """
+                UPDATE members SET
+                    uuid = ?, email = ?, name = ?, note = ?, geolocation = ?, subscribed = ?,
+                    created_at = ?, updated_at = ?, avatar_image = ?, comped = ?,
+                    email_count = ?, email_opened_count = ?, email_open_rate = ?,
+                    status = ?, last_seen_at = ?, unsubscribe_url = ?, email_suppression = ?,
+                    deleted_at = NULL
+                WHERE id = ?
+                """,
+                (
+                    member.get("uuid"),
+                    member.get("email"),
+                    member.get("name"),
+                    member.get("note"),
+                    member.get("geolocation"),
+                    member.get("subscribed"),
+                    member.get("created_at"),
+                    member.get("updated_at"),
+                    member.get("avatar_image"),
+                    member.get("comped"),
+                    member.get("email_count"),
+                    member.get("email_opened_count"),
+                    member.get("email_open_rate"),
+                    member.get("status"),
+                    member.get("last_seen_at"),
+                    member.get("unsubscribe_url"),
+                    email_suppression_json,
+                    member.get("id"),
+                ),
+            )
     else:
         # Normal insert or update
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO members (
-                id, uuid, email, name, note, geolocation, subscribed,
-                created_at, updated_at, avatar_image, comped,
-                email_count, email_opened_count, email_open_rate,
-                status, last_seen_at, unsubscribe_url, email_suppression, deleted_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
-                COALESCE((SELECT deleted_at FROM members WHERE id = ?), NULL)
+        # If attribution is provided, use it; otherwise preserve existing values
+        if attribution is not None:
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO members (
+                    id, uuid, email, name, note, geolocation, subscribed,
+                    created_at, updated_at, avatar_image, comped,
+                    email_count, email_opened_count, email_open_rate,
+                    status, last_seen_at, unsubscribe_url, email_suppression, deleted_at,
+                    attribution_id, attribution_type, attribution_url, attribution_title,
+                    attribution_referrer_source, attribution_referrer_medium, attribution_referrer_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE((SELECT deleted_at FROM members WHERE id = ?), NULL),
+                    ?, ?, ?, ?, ?, ?, ?
+                )
+                """,
+                (
+                    member.get("id"),
+                    member.get("uuid"),
+                    member.get("email"),
+                    member.get("name"),
+                    member.get("note"),
+                    member.get("geolocation"),
+                    member.get("subscribed"),
+                    member.get("created_at"),
+                    member.get("updated_at"),
+                    member.get("avatar_image"),
+                    member.get("comped"),
+                    member.get("email_count"),
+                    member.get("email_opened_count"),
+                    member.get("email_open_rate"),
+                    member.get("status"),
+                    member.get("last_seen_at"),
+                    member.get("unsubscribe_url"),
+                    email_suppression_json,
+                    member.get("id"),  # For COALESCE subquery
+                    attribution_id,
+                    attribution_type,
+                    attribution_url,
+                    attribution_title,
+                    attribution_referrer_source,
+                    attribution_referrer_medium,
+                    attribution_referrer_url,
+                ),
             )
-            """,
-            (
-                member.get("id"),
-                member.get("uuid"),
-                member.get("email"),
-                member.get("name"),
-                member.get("note"),
-                member.get("geolocation"),
-                member.get("subscribed"),
-                member.get("created_at"),
-                member.get("updated_at"),
-                member.get("avatar_image"),
-                member.get("comped"),
-                member.get("email_count"),
-                member.get("email_opened_count"),
-                member.get("email_open_rate"),
-                member.get("status"),
-                member.get("last_seen_at"),
-                member.get("unsubscribe_url"),
-                email_suppression_json,
-                member.get("id"),  # For COALESCE subquery
-            ),
-        )
+        else:
+            # Don't update attribution fields - preserve existing values
+            cursor.execute(
+                """
+                INSERT OR REPLACE INTO members (
+                    id, uuid, email, name, note, geolocation, subscribed,
+                    created_at, updated_at, avatar_image, comped,
+                    email_count, email_opened_count, email_open_rate,
+                    status, last_seen_at, unsubscribe_url, email_suppression, deleted_at,
+                    attribution_id, attribution_type, attribution_url, attribution_title,
+                    attribution_referrer_source, attribution_referrer_medium, attribution_referrer_url
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                    COALESCE((SELECT deleted_at FROM members WHERE id = ?), NULL),
+                    COALESCE((SELECT attribution_id FROM members WHERE id = ?), NULL),
+                    COALESCE((SELECT attribution_type FROM members WHERE id = ?), NULL),
+                    COALESCE((SELECT attribution_url FROM members WHERE id = ?), NULL),
+                    COALESCE((SELECT attribution_title FROM members WHERE id = ?), NULL),
+                    COALESCE((SELECT attribution_referrer_source FROM members WHERE id = ?), NULL),
+                    COALESCE((SELECT attribution_referrer_medium FROM members WHERE id = ?), NULL),
+                    COALESCE((SELECT attribution_referrer_url FROM members WHERE id = ?), NULL)
+                )
+                """,
+                (
+                    member.get("id"),
+                    member.get("uuid"),
+                    member.get("email"),
+                    member.get("name"),
+                    member.get("note"),
+                    member.get("geolocation"),
+                    member.get("subscribed"),
+                    member.get("created_at"),
+                    member.get("updated_at"),
+                    member.get("avatar_image"),
+                    member.get("comped"),
+                    member.get("email_count"),
+                    member.get("email_opened_count"),
+                    member.get("email_open_rate"),
+                    member.get("status"),
+                    member.get("last_seen_at"),
+                    member.get("unsubscribe_url"),
+                    email_suppression_json,
+                    member.get("id"),  # For COALESCE deleted_at subquery
+                    member.get("id"),  # For COALESCE attribution_id subquery
+                    member.get("id"),  # For COALESCE attribution_type subquery
+                    member.get("id"),  # For COALESCE attribution_url subquery
+                    member.get("id"),  # For COALESCE attribution_title subquery
+                    member.get("id"),  # For COALESCE attribution_referrer_source subquery
+                    member.get("id"),  # For COALESCE attribution_referrer_medium subquery
+                    member.get("id"),  # For COALESCE attribution_referrer_url subquery
+                ),
+            )
 
 
 def insert_labels(
@@ -588,12 +735,13 @@ def soft_delete_missing_members(cursor, fetched_member_ids: set) -> int:
     return cursor.rowcount
 
 
-def fetch_and_save_members(since: Optional[str] = None) -> int:
+def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool = False) -> int:
     """
     Fetch members from Ghost API using pagination and save them to database as they're fetched
 
     Args:
         since: ISO timestamp to fetch only members updated since this time
+        fetch_attribution: If True, fetch attribution data for each member (slow)
 
     Returns:
         Total number of members saved to database
@@ -644,8 +792,24 @@ def fetch_and_save_members(since: Optional[str] = None) -> int:
                     # Track member IDs for deletion detection
                     fetched_member_ids.add(member["id"])
 
-                    # Insert member
-                    insert_member(cursor, member)
+                    # Fetch attribution data if requested and not already fetched
+                    attribution = None
+                    if fetch_attribution:
+                        # Check if attribution has already been fetched for this member
+                        cursor.execute(
+                            "SELECT attribution_id FROM members WHERE id = ?",
+                            (member["id"],)
+                        )
+                        existing = cursor.fetchone()
+
+                        # Only fetch if attribution_id is NULL (not yet fetched)
+                        if existing is None or existing[0] is None:
+                            attribution = fetch_member_attribution(member["id"])
+                            if attribution:
+                                logger.debug(f"Fetched attribution for {member.get('email')}")
+
+                    # Insert member with attribution data
+                    insert_member(cursor, member, attribution)
 
                     # Insert labels
                     labels = member.get("labels", [])
@@ -790,6 +954,12 @@ Examples:
 
   # Sync members updated since specific date
   python members_to_sqlite.py --since 2024-01-01T00:00:00.000Z
+
+  # Full sync with attribution data (slow - requires API call per member)
+  python members_to_sqlite.py --attribution
+
+  # Fill in missing attribution data for existing members
+  python members_to_sqlite.py --attribution --incremental
         """,
     )
     parser.add_argument(
@@ -801,6 +971,11 @@ Examples:
         "--since",
         type=str,
         help="Only sync members updated since this ISO timestamp (e.g., 2024-01-01T00:00:00.000Z)",
+    )
+    parser.add_argument(
+        "--attribution",
+        action="store_true",
+        help="Fetch attribution data for each member (requires individual API call per member - slow)",
     )
 
     args = parser.parse_args()
@@ -848,7 +1023,9 @@ Examples:
     try:
         # Fetch and save members (streaming approach)
         logger.info("Starting sync process...")
-        saved_count = fetch_and_save_members(since=since_timestamp)
+        if args.attribution:
+            logger.info("Attribution fetching enabled (this will be slow)")
+        saved_count = fetch_and_save_members(since=since_timestamp, fetch_attribution=args.attribution)
 
         if saved_count == 0:
             logger.warning("No members found to process")

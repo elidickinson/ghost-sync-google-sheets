@@ -24,7 +24,15 @@ CREATE TABLE IF NOT EXISTS members (
     last_seen_at TEXT,                      -- ISO timestamp when member was last active
     unsubscribe_url TEXT,                   -- URL for unsubscribing
     email_suppression TEXT,                 -- JSON string with email suppression information
-    deleted_at TEXT                         -- ISO timestamp when member was soft deleted (NULL if active)
+    deleted_at TEXT,                        -- ISO timestamp when member was soft deleted (NULL if active)
+    -- Attribution fields (NULL means not pulled yet)
+    attribution_id TEXT,                    -- ID of the attributed post/page
+    attribution_type TEXT,                  -- Type of attribution (post, page, etc.)
+    attribution_url TEXT,                   -- URL of the attributed content
+    attribution_title TEXT,                 -- Title of the attributed content
+    attribution_referrer_source TEXT,       -- Referrer source (e.g., Google, Twitter)
+    attribution_referrer_medium TEXT,       -- Referrer medium (e.g., organic, social)
+    attribution_referrer_url TEXT           -- Full referrer URL
 );
 
 -- ============================================
