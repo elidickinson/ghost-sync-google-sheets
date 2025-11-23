@@ -23,7 +23,8 @@ CREATE TABLE IF NOT EXISTS members (
     status TEXT,                            -- Member status (free, paid, etc.)
     last_seen_at TEXT,                      -- ISO timestamp when member was last active
     unsubscribe_url TEXT,                   -- URL for unsubscribing
-    email_suppression TEXT                  -- JSON string with email suppression information
+    email_suppression TEXT,                 -- JSON string with email suppression information
+    deleted_at TEXT                         -- ISO timestamp when member was soft deleted (NULL if active)
 );
 
 -- ============================================
@@ -186,6 +187,7 @@ CREATE INDEX IF NOT EXISTS idx_members_subscribed ON members(subscribed);
 CREATE INDEX IF NOT EXISTS idx_members_email_open_rate ON members(email_open_rate);
 CREATE INDEX IF NOT EXISTS idx_members_status ON members(status);
 CREATE INDEX IF NOT EXISTS idx_members_last_seen_at ON members(last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_members_deleted_at ON members(deleted_at);
 
 -- Labels table indexes
 CREATE INDEX IF NOT EXISTS idx_labels_slug ON labels(slug);

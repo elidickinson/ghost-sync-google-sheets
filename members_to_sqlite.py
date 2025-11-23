@@ -209,43 +209,86 @@ def setup_database():
 
 
 def insert_member(cursor: sqlite3.Cursor, member: Dict[str, Any]) -> None:
-    """Insert or update a member record"""
+    """Insert or update a member record, restoring soft-deleted members if they reappear"""
     # Handle email_suppression as JSON string
     email_suppression = member.get("email_suppression")
     email_suppression_json = (
         json.dumps(email_suppression) if email_suppression else None
     )
 
-    cursor.execute(
-        """
-        INSERT OR REPLACE INTO members (
-            id, uuid, email, name, note, geolocation, subscribed,
-            created_at, updated_at, avatar_image, comped,
-            email_count, email_opened_count, email_open_rate,
-            status, last_seen_at, unsubscribe_url, email_suppression
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """,
-        (
-            member.get("id"),
-            member.get("uuid"),
-            member.get("email"),
-            member.get("name"),
-            member.get("note"),
-            member.get("geolocation"),
-            member.get("subscribed"),
-            member.get("created_at"),
-            member.get("updated_at"),
-            member.get("avatar_image"),
-            member.get("comped"),
-            member.get("email_count"),
-            member.get("email_opened_count"),
-            member.get("email_open_rate"),
-            member.get("status"),
-            member.get("last_seen_at"),
-            member.get("unsubscribe_url"),
-            email_suppression_json,
-        ),
-    )
+    # Check if member exists and is soft deleted
+    cursor.execute("SELECT deleted_at FROM members WHERE id = ?", (member.get("id"),))
+    existing = cursor.fetchone()
+
+    if existing and existing[0] is not None:
+        # Member was soft deleted, restore them
+        logger.info(f"Restoring previously deleted member: {member.get('email')}")
+        cursor.execute(
+            """
+            UPDATE members SET 
+                uuid = ?, email = ?, name = ?, note = ?, geolocation = ?, subscribed = ?,
+                created_at = ?, updated_at = ?, avatar_image = ?, comped = ?,
+                email_count = ?, email_opened_count = ?, email_open_rate = ?,
+                status = ?, last_seen_at = ?, unsubscribe_url = ?, email_suppression = ?,
+                deleted_at = NULL
+            WHERE id = ?
+            """,
+            (
+                member.get("uuid"),
+                member.get("email"),
+                member.get("name"),
+                member.get("note"),
+                member.get("geolocation"),
+                member.get("subscribed"),
+                member.get("created_at"),
+                member.get("updated_at"),
+                member.get("avatar_image"),
+                member.get("comped"),
+                member.get("email_count"),
+                member.get("email_opened_count"),
+                member.get("email_open_rate"),
+                member.get("status"),
+                member.get("last_seen_at"),
+                member.get("unsubscribe_url"),
+                email_suppression_json,
+                member.get("id"),
+            ),
+        )
+    else:
+        # Normal insert or update
+        cursor.execute(
+            """
+            INSERT OR REPLACE INTO members (
+                id, uuid, email, name, note, geolocation, subscribed,
+                created_at, updated_at, avatar_image, comped,
+                email_count, email_opened_count, email_open_rate,
+                status, last_seen_at, unsubscribe_url, email_suppression, deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 
+                COALESCE((SELECT deleted_at FROM members WHERE id = ?), NULL)
+            )
+            """,
+            (
+                member.get("id"),
+                member.get("uuid"),
+                member.get("email"),
+                member.get("name"),
+                member.get("note"),
+                member.get("geolocation"),
+                member.get("subscribed"),
+                member.get("created_at"),
+                member.get("updated_at"),
+                member.get("avatar_image"),
+                member.get("comped"),
+                member.get("email_count"),
+                member.get("email_opened_count"),
+                member.get("email_open_rate"),
+                member.get("status"),
+                member.get("last_seen_at"),
+                member.get("unsubscribe_url"),
+                email_suppression_json,
+                member.get("id"),  # For COALESCE subquery
+            ),
+        )
 
 
 def insert_labels(
@@ -500,6 +543,51 @@ def get_last_sync_time() -> Optional[str]:
         return None
 
 
+def soft_delete_missing_members(cursor, fetched_member_ids: set) -> int:
+    """
+    Soft delete members that are in the database but not in the fetched member IDs
+
+    Args:
+        cursor: Database cursor
+        fetched_member_ids: Set of member IDs fetched from Ghost API
+
+    Returns:
+        Number of members soft deleted
+    """
+    if not fetched_member_ids:
+        return 0
+
+    # Get all active member IDs from database (not already soft deleted)
+    cursor.execute(
+        """
+        SELECT id FROM members 
+        WHERE deleted_at IS NULL
+        AND id NOT IN ({})
+    """.format(",".join(["?" for _ in fetched_member_ids])),
+        list(fetched_member_ids),
+    )
+
+    missing_ids = [row[0] for row in cursor.fetchall()]
+
+    if not missing_ids:
+        return 0
+
+    # Soft delete the missing members
+    deleted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    placeholders = ",".join(["?" for _ in missing_ids])
+
+    cursor.execute(
+        f"""
+        UPDATE members 
+        SET deleted_at = ?, updated_at = ?
+        WHERE id IN ({placeholders})
+    """,
+        [deleted_at, deleted_at] + missing_ids,
+    )
+
+    return cursor.rowcount
+
+
 def fetch_and_save_members(since: Optional[str] = None) -> int:
     """
     Fetch members from Ghost API using pagination and save them to database as they're fetched
@@ -512,6 +600,7 @@ def fetch_and_save_members(since: Optional[str] = None) -> int:
     """
     total_saved = 0
     page = 1
+    fetched_member_ids = set()
 
     if since:
         logger.info(f"Fetching and saving members updated since {since}...")
@@ -552,6 +641,9 @@ def fetch_and_save_members(since: Optional[str] = None) -> int:
                 # Save this page of members to database
                 page_saved = 0
                 for member in members:
+                    # Track member IDs for deletion detection
+                    fetched_member_ids.add(member["id"])
+
                     # Insert member
                     insert_member(cursor, member)
 
@@ -606,6 +698,15 @@ def fetch_and_save_members(since: Optional[str] = None) -> int:
             except Exception as e:
                 logger.error(f"Error fetching page {page}: {e}")
                 raise  # Re-raise to be handled by caller
+
+        # Soft delete members that are no longer in Ghost API
+        if not since:  # Only do deletion detection on full syncs
+            deleted_count = soft_delete_missing_members(cursor, fetched_member_ids)
+            if deleted_count > 0:
+                logger.info(
+                    f"Soft deleted {deleted_count} members no longer in Ghost API"
+                )
+                conn.commit()
 
     finally:
         conn.close()

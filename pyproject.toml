@@ -1,7 +1,7 @@
 [project]
-name = "ghost-sync-google-sheets"
+name = "ghost-members-sqlite"
 version = "0.1.0"
-description = "Tools for syncing Ghost CMS data with Google Sheets"
+description = "Sync Ghost CMS member data to a local SQLite database"
 authors = [
     {name = "Eli Dickinson", email = "eli@example.com"}
 ]

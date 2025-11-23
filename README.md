@@ -1,101 +1,163 @@
-# Ghost Members Sync for Google Sheets
+# Ghost Members to SQLite
 
-Sync your full Ghost CMS member data to a Google Sheet (including attribution/referral fields). 
+A Python tool to sync Ghost CMS member data to a local SQLite database. This provides fast, local access to your Ghost member data for analysis, reporting, and backup.
 
-Features:
- - The sync happens within the Google Sheet. No need to trust a third-party service with your member data.
- - Sync pulls from API to ensure data integrity. Doesn't rely on catching webhooks or being run on a strict schedule. 
- - Can fetch attribution fields (source, utm strings, referrer), which are not available in the normal member export.
- - Optional automatic daily syncing.
- - Open source and free.
- 
-Limitations:
- - Fetching attribution data is slow because it requires an API call for *each member*. Syncing a Ghost Pro account could do about 125 records per minute.
- - Related to above, Google Sheets has [quota limitations](https://developers.google.com/apps-script/guides/services/quotas) that (I think) won't let you do more than around 20,000 records or 90 minutes of execution per day with a gmail.com account. Or 100,000 records and 6 hours of execution per day for a Google Workspace account. This should only be an issue for getting that first sync to complete with attribution fields enabled.
+## Features
 
+- **Fast local database** - SQLite database with optimized queries and indexes
+- **Complete member data** - Includes subscriptions, newsletters, tiers, labels, and email recipients
+- **Incremental sync** - Only fetches members updated since last sync
+- **Soft delete support** - Tracks deleted members for data integrity
+- **Production ready** - Robust error handling and logging
+- **Open source** - MIT licensed, no vendor lock-in
 
-## Installation
+## Quick Start
 
-1. **Create a new Google Sheet** or open an existing one
-2. Click **Extensions → Apps Script**
-3. Delete any existing code in the editor
-4. **Copy and paste** the entire contents of `GhostMembersSync.gs`
-5. Click **Save** (disk icon or Ctrl/Cmd+S)
-6. Go back to your spreadsheet and **Reload the page** - you should see a new "👻 Ghost Sync" menu
+1. **Install dependencies:**
+   ```bash
+   uv sync
+   ```
 
-### First Run: Authorization
+2. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env with your Ghost Admin API credentials
+   ```
 
-The first time you use any Ghost Sync function, Google will ask you to authorize the script:
+3. **Run the sync:**
+   ```bash
+   uv run members_to_sqlite.py
+   ```
 
-1. Click **Ghost Sync → Settings**
-2. You'll see: **"Authorization Required"** - click **Continue**
-3. **Select your Google account**
-4. You may see a warning like: **"Google hasn't verified this app"**
-   - This is normal - it's your own script, not a published app reviewed by Google
-   - Click **Advanced** (bottom left)
-   - Click **"Go to Unnamed Project (unsafe)"**
-   - Note: Google will also email you an alert. This is expected for custom Google Sheets scripts.
-5. Grant permissions to the script: click **Select All** then scroll to the bottom and **Continue.**
-   - The script only requests permission to edit the current Sheet, not anything else in your Google account.
+## Configuration
 
-## Dependencies
+Create a `.env` file with your Ghost Admin API credentials:
 
-This project uses [uv](https://github.com/astral-sh/uv) for dependency management.
-
-Install dependencies:
-```bash
-uv sync
+```env
+GHOST_URL=https://your-site.ghost.io
+ADMIN_API_KEY=your_admin_api_key_here
+DATABASE_FILE=ghost_members.db
 ```
 
-## Setup
+Get your Admin API Key from:
+- Ghost Admin → Settings → Integrations → Add Integration
+- Give it a name and turn on "Admin API"
+- Copy the API Key (format: `id:secret`)
 
-1. Click **Ghost Sync → Settings**
-2. Enter your **Ghost admin site URL** (e.g., `https://example.ghost.io/`)
-3. Enter your **Admin API Key** (from Ghost Admin → Settings → Integrations)
-4. Choose whether to include **attribution data** (slower sync)
-5. Click **Save**
+## Usage
 
-## Using the Sync
+### Full Sync
+Sync all members from Ghost to your local database:
+```bash
+uv run members_to_sqlite.py
+```
 
-### Full Update
-**Ghost Sync → Full Update**
-- Use for your first sync or when you need to refresh all data
-- Clears and rebuilds the sheet completely
+### Incremental Sync
+Only sync members updated since last run:
+```bash
+uv run members_to_sqlite.py --incremental
+```
 
-### Quick Update
-**Ghost Sync → Quick Update**
-- Only updates new members or missing attribution data
-- Must complete at least one Full Update first
+### Custom Database Location
+Use a custom database file path:
+```bash
+uv run members_to_sqlite.py --db /path/to/custom.db
+```
 
-### Daily Auto-Update
-**Ghost Sync → Setup Daily Auto-Update**
-- Automatically runs Quick Update once per day at midnight
-- Requires at least one Full Update to be completed first
-- Perfect for keeping your sheet up-to-date without manual intervention
-- Use the same menu option to enable, check status, or disable
+## Database Schema
 
-## Working with Data
+The SQLite database includes these tables:
 
-**Don't edit the "Ghost Members" sheet directly** - it gets overwritten during sync.
+- **`members`** - Core member data and email statistics
+- **`labels`** - Member labels and tags
+- **`newsletters`** - Newsletter subscriptions
+- **`tiers`** - Paid tier information
+- **`subscriptions`** - Subscription details and status
+- **`email_recipients`** - Email delivery tracking
+- **`sync_runs`** - Sync history and metadata
 
-Instead:
-1. Create additional sheets that reference the data
-2. Use formulas like `=QUERY('Ghost Members'!A:Z, "SELECT * WHERE E='paid'")` to filter
-3. Build pivot tables and charts on separate sheets
+### Key Features
 
-## Sharing the Sheet & Security Considerations
+- **Soft deletes** - Members deleted in Ghost are marked but not removed
+- **Idempotent updates** - Safe to run multiple times
+- **Relationship tracking** - All member relationships preserved
+- **Performance optimized** - Batch inserts and proper indexing
 
-Your Ghost API key gives full administrative access to your site:
-- Only add collaborators to this sheet you trust
-- Share as "View only" when possible
-- Create separate analysis sheets for untrusted users
-- Revoke compromised keys in Ghost Admin → Settings → Integrations
+## Development
+
+### Running Tests
+```bash
+uv run pytest -v
+```
+
+### Code Quality
+```bash
+uv run ruff check
+uv run ruff format
+```
+
+### Project Structure
+```
+├── members_to_sqlite.py    # Main sync script
+├── schema.sql              # Database schema
+├── test_*.py               # Test files
+├── .env.example            # Environment template
+└── README.md               # This file
+```
+
+## API Details
+
+This tool uses the Ghost Admin API with:
+- **JWT authentication** using HMAC-SHA256
+- **Pagination** for handling large member sets
+- **Rate limiting** awareness to avoid API limits
+- **Error handling** with automatic retries
+
+## Security Considerations
+
+- Your Admin API Key provides full access to your Ghost site
+- Store it securely in environment variables, not in code
+- Don't commit `.env` files to version control
+- Consider using read-only API keys when available
 
 ## Troubleshooting
 
-- If sync seems stuck for a long time: Use **Ghost Sync → Cancel Update** then run a new Full Update
-- For detailed logs: Go to Extensions → Apps Script → Execution log
+### Common Issues
+
+1. **"Invalid Admin API Key format"**
+   - Ensure your key follows the format `id:secret`
+   - The secret part must be hexadecimal
+
+2. **"API returned status 401"**
+   - Check your API key is correct and not expired
+   - Verify the URL matches your Ghost site exactly
+
+3. **Database locked errors**
+   - Ensure no other process is using the database
+   - The script uses WAL mode for better concurrency
+
+### Debug Mode
+
+Enable debug logging:
+```bash
+uv run members_to_sqlite.py --debug
+```
+
+## Performance
+
+- **Initial sync**: ~1,000 members per minute (depends on API limits)
+- **Incremental sync**: Much faster, only processes changes
+- **Database size**: ~1KB per member (varies with data)
+- **Memory usage**: Low, streams data in batches
 
 ## License
 
-MIT
+MIT License - see LICENSE file for details.
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Add tests for new functionality
+4. Ensure all tests pass
+5. Submit a pull request

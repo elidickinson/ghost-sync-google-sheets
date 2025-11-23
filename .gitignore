@@ -11,6 +11,8 @@ env/
 *.db
 *.sqlite
 *.sqlite3
+*.db-shm
+*.db-wal
 
 # Python
 __pycache__/
@@ -51,3 +53,10 @@ MANIFEST
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# Claude AI
+.claude/
+
+# Sample data and documentation
+# Eli's files
+eli/

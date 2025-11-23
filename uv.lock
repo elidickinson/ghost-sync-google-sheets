@@ -159,7 +159,7 @@ wheels = [
 ]
 
 [[package]]
-name = "ghost-sync-google-sheets"
+name = "ghost-members-sqlite"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
