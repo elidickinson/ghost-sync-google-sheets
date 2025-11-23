@@ -339,6 +339,20 @@ HAVING MIN(CASE
 END) IS NOT NULL;
 
 -- ============================================
+-- SYNC_RUNS TABLE
+-- ============================================
+-- Track sync execution history and status
+CREATE TABLE IF NOT EXISTS sync_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    status TEXT NOT NULL,
+    members_fetched INTEGER DEFAULT 0,
+    members_saved INTEGER DEFAULT 0,
+    error_message TEXT
+);
+
+-- ============================================
 -- SAMPLE QUERIES
 -- ============================================
 
