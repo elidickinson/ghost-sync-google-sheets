@@ -933,6 +933,94 @@ def save_members_to_database(members: List[Dict[str, Any]]) -> int:
     return saved_count
 
 
+def backfill_attribution() -> int:
+    """
+    Backfill attribution data for all members in database with NULL attribution_id
+
+    Returns:
+        Number of members with attribution fetched
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+
+    try:
+        # Get all members with NULL attribution_id
+        cursor.execute("""
+            SELECT id, email
+            FROM members
+            WHERE attribution_id IS NULL
+            AND deleted_at IS NULL
+            ORDER BY created_at DESC
+        """)
+
+        members_to_backfill = cursor.fetchall()
+        total_members = len(members_to_backfill)
+
+        if total_members == 0:
+            logger.info("No members found with missing attribution data")
+            return 0
+
+        logger.info(f"Found {total_members} members with missing attribution data")
+        logger.info("Starting attribution backfill (this will be slow)...")
+
+        backfilled_count = 0
+        failed_count = 0
+
+        for i, (member_id, email) in enumerate(members_to_backfill, 1):
+            try:
+                attribution = fetch_member_attribution(member_id)
+
+                if attribution:
+                    # Update only attribution fields
+                    cursor.execute("""
+                        UPDATE members
+                        SET attribution_id = ?,
+                            attribution_type = ?,
+                            attribution_url = ?,
+                            attribution_title = ?,
+                            attribution_referrer_source = ?,
+                            attribution_referrer_medium = ?,
+                            attribution_referrer_url = ?
+                        WHERE id = ?
+                    """, (
+                        attribution.get("id"),
+                        attribution.get("type"),
+                        attribution.get("url"),
+                        attribution.get("title"),
+                        attribution.get("referrer_source"),
+                        attribution.get("referrer_medium"),
+                        attribution.get("referrer_url"),
+                        member_id,
+                    ))
+                    backfilled_count += 1
+                else:
+                    # Set attribution_id to empty string to mark as "checked but no attribution"
+                    cursor.execute("""
+                        UPDATE members
+                        SET attribution_id = ''
+                        WHERE id = ?
+                    """, (member_id,))
+
+                # Commit every 10 members
+                if i % 10 == 0:
+                    conn.commit()
+                    logger.info(f"Progress: {i}/{total_members} members processed ({backfilled_count} with attribution)")
+
+            except Exception as e:
+                logger.warning(f"Failed to fetch attribution for {email}: {e}")
+                failed_count += 1
+                continue
+
+        # Final commit
+        conn.commit()
+
+        logger.info(f"Backfill complete: {backfilled_count} members with attribution, {total_members - backfilled_count - failed_count} without attribution, {failed_count} failed")
+        return backfilled_count
+
+    finally:
+        conn.close()
+
+
 # ============================================
 # MAIN FUNCTION
 # ============================================
@@ -960,6 +1048,9 @@ Examples:
 
   # Fill in missing attribution data for existing members
   python members_to_sqlite.py --attribution --incremental
+
+  # Backfill attribution for ALL members in database with missing attribution
+  python members_to_sqlite.py --backfill-attribution
         """,
     )
     parser.add_argument(
@@ -977,6 +1068,11 @@ Examples:
         action="store_true",
         help="Fetch attribution data for each member (requires individual API call per member - slow)",
     )
+    parser.add_argument(
+        "--backfill-attribution",
+        action="store_true",
+        help="Backfill attribution for all members in database with NULL attribution_id (slow)",
+    )
 
     args = parser.parse_args()
 
@@ -992,6 +1088,17 @@ Examples:
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         sys.exit(1)
+
+    # Handle backfill-attribution mode (separate from normal sync)
+    if args.backfill_attribution:
+        logger.info("Starting attribution backfill mode...")
+        try:
+            backfilled_count = backfill_attribution()
+            logger.info(f"✅ Attribution backfill completed! {backfilled_count} members updated")
+            sys.exit(0)
+        except Exception as e:
+            logger.error(f"Attribution backfill failed: {e}", exc_info=True)
+            sys.exit(1)
 
     # Determine sync starting point
     since_timestamp = None
