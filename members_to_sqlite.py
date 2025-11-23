@@ -19,6 +19,7 @@ import requests
 import sqlite3
 import logging
 import sys
+import argparse
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import os
@@ -417,15 +418,54 @@ def insert_email_recipients(cursor: sqlite3.Cursor, member_id: str, email_recipi
 # DATA FETCHING AND PROCESSING
 # ============================================
 
-def fetch_all_members() -> List[Dict[str, Any]]:
-    """Fetch all members from Ghost API using pagination"""
+def get_last_sync_time() -> Optional[str]:
+    """Get the timestamp of the last successful sync"""
+    try:
+        conn = sqlite3.connect(DATABASE_FILE)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            SELECT completed_at
+            FROM sync_runs
+            WHERE status = 'completed'
+            ORDER BY completed_at DESC
+            LIMIT 1
+        ''')
+
+        result = cursor.fetchone()
+        conn.close()
+
+        if result and result[0]:
+            return result[0]
+        return None
+    except sqlite3.OperationalError:
+        # Table doesn't exist yet (first run)
+        return None
+
+
+def fetch_all_members(since: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Fetch members from Ghost API using pagination
+
+    Args:
+        since: ISO timestamp to fetch only members updated since this time
+    """
     all_members = []
     page = 1
 
-    logger.info("Fetching members from Ghost API...")
+    if since:
+        logger.info(f"Fetching members updated since {since}...")
+    else:
+        logger.info("Fetching all members from Ghost API...")
 
     while True:
+        # Build endpoint with optional filter
         endpoint = f'/ghost/api/admin/members/?limit={MEMBERS_PAGE_SIZE}&include=email_recipients,subscriptions,newsletters,tiers&page={page}'
+
+        if since:
+            # URL encode the filter parameter
+            # Format: filter=updated_at:>'2024-01-01T00:00:00.000Z'
+            endpoint += f"&filter=updated_at:>'{since}'"
 
         try:
             response = make_ghost_request(endpoint)
@@ -514,13 +554,38 @@ def save_members_to_database(members: List[Dict[str, Any]]) -> int:
 
 def main():
     """Main execution function"""
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description='Sync Ghost members to SQLite database',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Full sync (fetch all members)
+  python members_to_sqlite.py
+
+  # Incremental sync (fetch only updated members since last run)
+  python members_to_sqlite.py --incremental
+
+  # Sync members updated since specific date
+  python members_to_sqlite.py --since 2024-01-01T00:00:00.000Z
+        '''
+    )
+    parser.add_argument(
+        '--incremental',
+        action='store_true',
+        help='Only sync members updated since last successful sync'
+    )
+    parser.add_argument(
+        '--since',
+        type=str,
+        help='Only sync members updated since this ISO timestamp (e.g., 2024-01-01T00:00:00.000Z)'
+    )
+
+    args = parser.parse_args()
+
     if not GHOST_URL or not ADMIN_API_KEY:
         logger.error("Missing configuration: GHOST_URL and ADMIN_API_KEY must be set in .env file")
         sys.exit(1)
-
-    # Track sync run
-    conn = sqlite3.connect(DATABASE_FILE)
-    cursor = conn.cursor()
 
     # Setup database first
     try:
@@ -528,6 +593,22 @@ def main():
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         sys.exit(1)
+
+    # Determine sync starting point
+    since_timestamp = None
+    if args.incremental:
+        since_timestamp = get_last_sync_time()
+        if since_timestamp:
+            logger.info(f"Incremental sync mode: fetching updates since {since_timestamp}")
+        else:
+            logger.info("No previous sync found, performing full sync")
+    elif args.since:
+        since_timestamp = args.since
+        logger.info(f"Syncing members updated since {since_timestamp}")
+
+    # Track sync run
+    conn = sqlite3.connect(DATABASE_FILE)
+    cursor = conn.cursor()
 
     # Start tracking this sync run
     started_at = datetime.utcnow().isoformat()
@@ -539,9 +620,9 @@ def main():
     sync_run_id = cursor.lastrowid
 
     try:
-        # Fetch all members
+        # Fetch members
         logger.info("Starting sync process...")
-        members = fetch_all_members()
+        members = fetch_all_members(since=since_timestamp)
 
         if not members:
             logger.warning("No members found to process")

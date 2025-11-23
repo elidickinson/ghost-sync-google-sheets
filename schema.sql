@@ -286,7 +286,7 @@ GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.email_open_rate, m.cre
 
 -- Subscription overview view
 CREATE VIEW IF NOT EXISTS subscription_overview AS
-SELECT 
+SELECT
     m.id as member_id,
     m.email,
     m.name,
@@ -302,6 +302,41 @@ LEFT JOIN subscriptions s ON m.id = s.member_id
 LEFT JOIN member_tiers mt ON m.id = mt.member_id
 LEFT JOIN tiers t ON mt.tier_id = t.id
 GROUP BY m.id, m.email, m.name, m.status;
+
+-- Newsletter subscription timeline view
+-- Calculates approximate join and leave dates based on email delivery history
+CREATE VIEW IF NOT EXISTS newsletter_subscription_timeline AS
+SELECT
+    m.id as member_id,
+    m.email,
+    m.name,
+    m.subscribed as currently_subscribed,
+    m.status,
+    m.created_at as member_created_at,
+    MIN(CASE
+        WHEN er.delivered_at IS NOT NULL THEN er.delivered_at
+        WHEN er.processed_at IS NOT NULL THEN er.processed_at
+    END) as approx_newsletter_join_date,
+    CASE
+        -- If currently subscribed to newsletter, leave date is NULL
+        WHEN m.subscribed = 1 THEN NULL
+        -- Otherwise, use the last email they received
+        ELSE MAX(CASE
+            WHEN er.delivered_at IS NOT NULL THEN er.delivered_at
+            WHEN er.processed_at IS NOT NULL THEN er.processed_at
+        END)
+    END as approx_newsletter_leave_date,
+    COUNT(DISTINCT er.id) as total_emails_received,
+    COUNT(DISTINCT CASE WHEN er.opened_at IS NOT NULL THEN er.id END) as emails_opened,
+    MAX(er.opened_at) as last_email_opened_at,
+    MAX(er.delivered_at) as last_email_delivered_at
+FROM members m
+LEFT JOIN email_recipients er ON m.id = er.member_id
+GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.created_at
+HAVING MIN(CASE
+    WHEN er.delivered_at IS NOT NULL THEN er.delivered_at
+    WHEN er.processed_at IS NOT NULL THEN er.processed_at
+END) IS NOT NULL;
 
 -- ============================================
 -- SAMPLE QUERIES

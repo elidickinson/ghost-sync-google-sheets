@@ -265,6 +265,75 @@ class TestAPIFetching:
         assert members[0]['id'] == '1'
         assert members[1]['id'] == '2'
 
+    @patch('members_to_sqlite.make_ghost_request')
+    def test_fetch_incremental_with_since(self, mock_request):
+        """Test fetching members with since parameter for incremental sync"""
+        # Mock API response
+        mock_request.return_value = {
+            'members': [
+                {'id': '3', 'email': 'newuser@example.com', 'name': 'New User'}
+            ],
+            'meta': {
+                'pagination': {
+                    'page': 1,
+                    'pages': 1
+                }
+            }
+        }
+
+        since_time = '2024-01-01T00:00:00.000Z'
+        members = members_to_sqlite.fetch_all_members(since=since_time)
+
+        # Verify the filter was included in the endpoint
+        call_args = mock_request.call_args[0][0]
+        assert f"filter=updated_at:>'{since_time}'" in call_args, "Should include since filter in API call"
+        assert len(members) == 1, "Should fetch only updated members"
+        assert members[0]['email'] == 'newuser@example.com'
+
+
+class TestIncrementalSync:
+    """Test incremental sync functionality"""
+
+    def test_get_last_sync_time_no_database(self):
+        """Test getting last sync time when database doesn't exist"""
+        original_db = members_to_sqlite.DATABASE_FILE
+        members_to_sqlite.DATABASE_FILE = '/tmp/nonexistent_test.db'
+
+        try:
+            result = members_to_sqlite.get_last_sync_time()
+            assert result is None, "Should return None when database doesn't exist"
+        finally:
+            members_to_sqlite.DATABASE_FILE = original_db
+
+    def test_get_last_sync_time_with_history(self, tmp_path):
+        """Test getting last sync time from existing sync history"""
+        db_file = tmp_path / "test_ghost.db"
+        original_db = members_to_sqlite.DATABASE_FILE
+        members_to_sqlite.DATABASE_FILE = str(db_file)
+
+        try:
+            members_to_sqlite.setup_database()
+
+            # Insert a completed sync run
+            conn = sqlite3.connect(str(db_file))
+            cursor = conn.cursor()
+
+            test_time = '2024-01-01T12:00:00.000Z'
+            cursor.execute(
+                'INSERT INTO sync_runs (started_at, completed_at, status) VALUES (?, ?, ?)',
+                ('2024-01-01T11:00:00.000Z', test_time, 'completed')
+            )
+            conn.commit()
+            conn.close()
+
+            # Get last sync time
+            result = members_to_sqlite.get_last_sync_time()
+
+            assert result == test_time, f"Should return the last completed sync time, got {result}"
+
+        finally:
+            members_to_sqlite.DATABASE_FILE = original_db
+
 
 class TestSaveMembers:
     """Test the save_members_to_database function"""

@@ -52,6 +52,25 @@ Details of email campaigns including subject, content stats, and delivery metric
 ### `sync_runs`
 Tracks each sync operation with start/end times, status, and statistics. Useful for monitoring and debugging sync jobs.
 
+### Views
+
+The database includes helpful views for common queries:
+
+#### `member_engagement_summary`
+Overview of member engagement metrics including emails received, opened, and subscription status.
+
+#### `subscription_overview`
+Summary of member subscriptions including active/canceled counts and tier information.
+
+#### `newsletter_subscription_timeline`
+**Calculates approximate newsletter subscription timeline based on email delivery history:**
+- `approx_newsletter_join_date`: First email received (delivered or processed)
+- `approx_newsletter_leave_date`: Last email received (NULL if currently subscribed)
+- Email engagement statistics
+- Only includes members who have received at least one email
+
+This view is particularly useful for understanding member lifecycle and identifying when subscribers joined or left the newsletter.
+
 ## Setup
 
 1. **Install uv** (if not already installed):
@@ -90,29 +109,47 @@ Tracks each sync operation with start/end times, status, and statistics. Useful 
 
 ## Usage
 
-Run the script:
+### Basic Usage
+
+Full sync (fetch all members):
 ```bash
 uv run python members_to_sqlite.py
 ```
 
+Incremental sync (only fetch members updated since last successful sync):
+```bash
+uv run python members_to_sqlite.py --incremental
+```
+
+Sync members updated since a specific date:
+```bash
+uv run python members_to_sqlite.py --since 2024-01-01T00:00:00.000Z
+```
+
 The script will:
 1. Create a SQLite database file named `ghost_members.db` (if it doesn't exist)
-2. Fetch all members, subscriptions, newsletters, tiers, and email data from your Ghost site
+2. Fetch members from your Ghost site (all members or only updated ones)
 3. Store the data in normalized tables (updates existing records)
 4. Show progress updates during the process
 5. Track the sync run in the `sync_runs` table
 
 ### Running Daily Updates
 
-The script is designed to be run repeatedly (e.g., daily via cron job). It will:
-- Update existing member records with new data
-- Add any new members
-- Track each sync run with timestamps and statistics
+The script is designed to be run repeatedly (e.g., daily via cron job). **For daily updates, use `--incremental` mode for much faster syncs:**
 
-Example cron job for daily sync at 2 AM:
 ```bash
-0 2 * * * cd /path/to/ghost-sync-google-sheets && uv run python members_to_sqlite.py >> sync.log 2>&1
+# Incremental sync - only fetches members changed since last run (recommended for daily use)
+0 2 * * * cd /path/to/ghost-sync-google-sheets && uv run python members_to_sqlite.py --incremental >> sync.log 2>&1
+
+# Full sync - fetches all members (good for weekly comprehensive sync)
+0 2 * * 0 cd /path/to/ghost-sync-google-sheets && uv run python members_to_sqlite.py >> sync.log 2>&1
 ```
+
+**Benefits of incremental sync:**
+- Much faster execution (seconds vs minutes for large member bases)
+- Lower API usage
+- Still maintains complete historical data
+- Automatically uses last successful sync timestamp
 
 ## Output
 
@@ -164,9 +201,35 @@ ORDER BY member_count DESC;
 SELECT m.email, m.name, s.tier_name, s.current_period_end
 FROM members m
 JOIN subscriptions s ON m.id = s.member_id
-WHERE s.status = 'active' 
+WHERE s.status = 'active'
   AND s.current_period_end <= date('now', '+30 days')
 ORDER BY s.current_period_end ASC;
+
+-- Newsletter subscription timeline - see when members joined and left
+SELECT
+    email,
+    name,
+    currently_subscribed,
+    approx_newsletter_join_date,
+    approx_newsletter_leave_date,
+    total_emails_received,
+    emails_opened,
+    ROUND(CAST(emails_opened AS FLOAT) / total_emails_received * 100, 1) as open_rate_pct
+FROM newsletter_subscription_timeline
+ORDER BY approx_newsletter_join_date DESC
+LIMIT 20;
+
+-- Members who unsubscribed recently (left in last 30 days)
+SELECT
+    email,
+    name,
+    approx_newsletter_leave_date,
+    total_emails_received,
+    emails_opened
+FROM newsletter_subscription_timeline
+WHERE currently_subscribed = 0
+  AND approx_newsletter_leave_date >= date('now', '-30 days')
+ORDER BY approx_newsletter_leave_date DESC;
 ```
 
 ## Configuration Options
