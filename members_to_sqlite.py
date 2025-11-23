@@ -20,7 +20,6 @@ import sqlite3
 import logging
 import sys
 import argparse
-import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 import os
@@ -761,7 +760,7 @@ Examples:
             return
 
         # Update sync run as completed
-        conn = sqlite3.connect(DATABASE_FILE)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE sync_runs SET completed_at = ?, status = ?, members_fetched = ?, members_saved = ? WHERE id = ?",
@@ -775,6 +774,14 @@ Examples:
         )
         conn.commit()
         conn.close()
+
+        # Checkpoint WAL to clean up .db-wal file
+        try:
+            conn = get_db_connection()
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+        except sqlite3.OperationalError as e:
+            logger.warning(f"Could not checkpoint WAL (database may be in use): {e}")
 
         logger.info(
             f"✅ Sync completed successfully! {saved_count} members saved to '{DATABASE_FILE}'"

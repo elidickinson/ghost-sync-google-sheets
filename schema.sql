@@ -208,8 +208,6 @@ CREATE INDEX IF NOT EXISTS idx_subscriptions_current_period_end ON subscriptions
 -- Email recipients table indexes
 CREATE INDEX IF NOT EXISTS idx_email_recipients_member_id ON email_recipients(member_id);
 CREATE INDEX IF NOT EXISTS idx_email_recipients_email_id ON email_recipients(email_id);
-CREATE INDEX IF NOT EXISTS idx_email_recipients_delivered_at ON email_recipients(delivered_at);
-CREATE INDEX IF NOT EXISTS idx_email_recipients_opened_at ON email_recipients(opened_at);
 
 -- Emails table indexes
 CREATE INDEX IF NOT EXISTS idx_emails_created_at ON emails(created_at);
@@ -223,7 +221,7 @@ CREATE INDEX IF NOT EXISTS idx_emails_newsletter_id ON emails(newsletter_id);
 
 -- Member engagement summary view
 CREATE VIEW IF NOT EXISTS member_engagement_summary AS
-SELECT 
+SELECT
     m.id,
     m.email,
     m.name,
@@ -245,12 +243,12 @@ LEFT JOIN email_recipients er ON m.id = er.member_id
 LEFT JOIN subscriptions s ON m.id = s.member_id AND s.status = 'active'
 LEFT JOIN member_tiers mt ON m.id = mt.member_id
 LEFT JOIN tiers t ON mt.tier_id = t.id
-GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.email_count, 
+GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.email_count,
          m.email_opened_count, m.email_open_rate, m.created_at, m.last_seen_at;
 
 -- Email campaign performance view
 CREATE VIEW IF NOT EXISTS email_campaign_performance AS
-SELECT 
+SELECT
     e.id,
     e.subject,
     e.status,
@@ -265,12 +263,12 @@ SELECT
     COUNT(DISTINCT CASE WHEN er.opened_at IS NOT NULL THEN er.member_id END) as unique_opens
 FROM emails e
 LEFT JOIN email_recipients er ON e.id = er.email_id
-GROUP BY e.id, e.subject, e.status, e.email_count, e.delivered_count, 
+GROUP BY e.id, e.subject, e.status, e.email_count, e.delivered_count,
          e.opened_count, e.failed_count, e.created_at, e.submitted_at;
 
 -- Members with labels view
 CREATE VIEW IF NOT EXISTS members_with_labels AS
-SELECT 
+SELECT
     m.id,
     m.email,
     m.name,
@@ -305,7 +303,7 @@ GROUP BY m.id, m.email, m.name, m.status;
 
 -- Newsletter subscription timeline view
 -- Calculates approximate join and leave dates based on email delivery history
-CREATE VIEW IF NOT EXISTS newsletter_subscription_timeline AS
+CREATE VIEW IF NOT EXISTS newsletter_timeline AS
 SELECT
     m.id as member_id,
     m.email,
@@ -313,30 +311,21 @@ SELECT
     m.subscribed as currently_subscribed,
     m.status,
     m.created_at as member_created_at,
-    MIN(CASE
-        WHEN er.delivered_at IS NOT NULL THEN er.delivered_at
-        WHEN er.processed_at IS NOT NULL THEN er.processed_at
-    END) as approx_newsletter_join_date,
+    MIN(e.submitted_at) as join_date,
     CASE
         -- If currently subscribed to newsletter, leave date is NULL
         WHEN m.subscribed = 1 THEN NULL
         -- Otherwise, use the last email they received
-        ELSE MAX(CASE
-            WHEN er.delivered_at IS NOT NULL THEN er.delivered_at
-            WHEN er.processed_at IS NOT NULL THEN er.processed_at
-        END)
-    END as approx_newsletter_leave_date,
+        ELSE MAX(e.submitted_at)
+    END as leave_date,
     COUNT(DISTINCT er.id) as total_emails_received,
     COUNT(DISTINCT CASE WHEN er.opened_at IS NOT NULL THEN er.id END) as emails_opened,
-    MAX(er.opened_at) as last_email_opened_at,
-    MAX(er.delivered_at) as last_email_delivered_at
+    MAX(er.opened_at) as last_email_opened_at
 FROM members m
 LEFT JOIN email_recipients er ON m.id = er.member_id
+LEFT JOIN emails e ON er.email_id = e.id
 GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.created_at
-HAVING MIN(CASE
-    WHEN er.delivered_at IS NOT NULL THEN er.delivered_at
-    WHEN er.processed_at IS NOT NULL THEN er.processed_at
-END) IS NOT NULL;
+HAVING MIN(e.submitted_at) IS NOT NULL;
 
 -- ============================================
 -- SYNC_RUNS TABLE
@@ -359,17 +348,17 @@ CREATE TABLE IF NOT EXISTS sync_runs (
 /*
 -- Get top 10 most engaged members
 SELECT email, name, status, email_open_rate, email_opened_count, email_count
-FROM members 
-WHERE email_count > 0 
-ORDER BY email_open_rate DESC, email_opened_count DESC 
+FROM members
+WHERE email_count > 0
+ORDER BY email_open_rate DESC, email_opened_count DESC
 LIMIT 10;
 
 -- Get recent email campaigns with performance
-SELECT subject, created_at, delivered_count, opened_count, 
+SELECT subject, created_at, delivered_count, opened_count,
        ROUND((CAST(opened_count AS FLOAT) / delivered_count) * 100, 2) as open_rate
-FROM emails 
-WHERE status = 'submitted' 
-ORDER BY created_at DESC 
+FROM emails
+WHERE status = 'submitted'
+ORDER BY created_at DESC
 LIMIT 20;
 
 -- Find members with specific labels
@@ -381,12 +370,12 @@ WHERE l.name IN ('Marketing_Optout', 'VIP')
 ORDER BY m.email_open_rate DESC;
 
 -- Email engagement trends over time
-SELECT 
+SELECT
     DATE(created_at) as date,
     COUNT(*) as emails_sent,
     SUM(opened_count) as total_opens,
     ROUND(AVG(email_open_rate), 2) as avg_open_rate
-FROM emails 
+FROM emails
 WHERE created_at >= date('now', '-30 days')
 GROUP BY DATE(created_at)
 ORDER BY date DESC;
@@ -414,13 +403,13 @@ ORDER BY member_count DESC;
 SELECT m.email, m.name, s.tier_name, s.current_period_end
 FROM members m
 JOIN subscriptions s ON m.id = s.member_id
-WHERE s.status = 'active' 
+WHERE s.status = 'active'
   AND s.current_period_end <= date('now', '+30 days')
 ORDER BY s.current_period_end ASC;
 
 -- Member lifecycle analysis - when members become paid subscribers
-SELECT 
-    DATE(m.created_at) as join_date, 
+SELECT
+    DATE(m.created_at) as join_date,
     MIN(DATE(s.start_date)) as first_paid_subscription,
     COUNT(m.id) as members
 FROM members m
