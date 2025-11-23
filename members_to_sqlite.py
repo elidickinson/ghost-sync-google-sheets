@@ -20,8 +20,9 @@ import sqlite3
 import logging
 import sys
 import argparse
+import time
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
 
@@ -55,7 +56,9 @@ def get_db_connection():
 GHOST_URL = os.getenv("GHOST_URL")  # Your Ghost URL (no trailing slash)
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")  # Your Admin API Key (format: id:secret)
 MEMBERS_PAGE_SIZE = 100  # Number of members to fetch per page
-DATABASE_FILE = "ghost_members.db"  # SQLite database file name
+DATABASE_FILE = os.getenv(
+    "DATABASE_FILE", "ghost_members.db"
+)  # SQLite database file name
 SCHEMA_FILE = "schema.sql"  # Database schema file name
 
 
@@ -111,16 +114,21 @@ def generate_token(admin_api_key: str) -> str:
 
 
 def make_ghost_request(
-    endpoint: str, method: str = "GET", data: Optional[Dict[str, Any]] = None, **kwargs
+    endpoint: str,
+    method: str = "GET",
+    data: Optional[Dict[str, Any]] = None,
+    max_retries: int = 3,
+    **kwargs,
 ) -> Dict[str, Any]:
     """
-    Make an authenticated request to the Ghost Admin API
+    Make an authenticated request to the Ghost Admin API with retry logic
 
     Args:
-        endpoint: The API endpoint (e.g., '/ghost/api/admin/members/')
-        method: HTTP method (GET, POST, PUT, DELETE)
-        data: Optional JSON data for POST/PUT requests
-        **kwargs: Additional arguments to pass to requests
+        endpoint: API endpoint (e.g., '/admin/members/')
+        method: HTTP method (default: 'GET')
+        data: Request body data for POST/PUT requests
+        max_retries: Maximum number of retry attempts (default: 3)
+        **kwargs: Additional arguments passed to requests.request
 
     Returns:
         Parsed JSON response
@@ -145,14 +153,32 @@ def make_ghost_request(
     if "headers" in kwargs:
         headers.update(kwargs.pop("headers"))
 
-    response = requests.request(
-        method=method, url=url, headers=headers, json=data, **kwargs
-    )
+    # Retry logic with exponential backoff
+    for attempt in range(max_retries + 1):
+        try:
+            response = requests.request(
+                method=method, url=url, headers=headers, json=data, timeout=30, **kwargs
+            )
 
-    if response.ok:
-        return response.json()
-    else:
-        raise Exception(f"API returned status {response.status_code}: {response.text}")
+            if response.ok:
+                return response.json()
+            else:
+                raise Exception(
+                    f"API returned status {response.status_code}: {response.text}"
+                )
+
+        except requests.exceptions.RequestException as e:
+            if attempt == max_retries:
+                raise Exception(f"Request failed after {max_retries + 1} attempts: {e}")
+
+            wait_time = 2**attempt  # Exponential backoff: 1s, 2s, 4s
+            logger.warning(
+                f"Request failed (attempt {attempt + 1}/{max_retries + 1}), retrying in {wait_time}s: {e}"
+            )
+            time.sleep(wait_time)
+
+    # This should never be reached, but satisfies type checker
+    raise Exception("Unexpected error in request retry logic")
 
 
 # ============================================
@@ -711,7 +737,7 @@ Examples:
     cursor = conn.cursor()
 
     # Start tracking this sync run
-    started_at = datetime.utcnow().isoformat()
+    started_at = datetime.now(timezone.utc).isoformat()
     cursor.execute(
         "INSERT INTO sync_runs (started_at, status) VALUES (?, ?)",
         (started_at, "running"),
@@ -728,7 +754,7 @@ Examples:
             logger.warning("No members found to process")
             cursor.execute(
                 "UPDATE sync_runs SET completed_at = ?, status = ?, members_fetched = 0 WHERE id = ?",
-                (datetime.utcnow().isoformat(), "completed", sync_run_id),
+                (datetime.now(timezone.utc).isoformat(), "completed", sync_run_id),
             )
             conn.commit()
             conn.close()
@@ -740,7 +766,7 @@ Examples:
         cursor.execute(
             "UPDATE sync_runs SET completed_at = ?, status = ?, members_fetched = ?, members_saved = ? WHERE id = ?",
             (
-                datetime.utcnow().isoformat(),
+                datetime.now(timezone.utc).isoformat(),
                 "completed",
                 saved_count,
                 saved_count,
@@ -762,7 +788,7 @@ Examples:
         cursor = conn.cursor()
         cursor.execute(
             "UPDATE sync_runs SET completed_at = ?, status = ?, error_message = ? WHERE id = ?",
-            (datetime.utcnow().isoformat(), "failed", str(e), sync_run_id),
+            (datetime.now(timezone.utc).isoformat(), "failed", str(e), sync_run_id),
         )
         conn.commit()
         conn.close()
