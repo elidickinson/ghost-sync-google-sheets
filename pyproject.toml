@@ -31,3 +31,8 @@ include = [
     "test_ghost_api.py",
     "schema.sql"
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3.5",
+]
