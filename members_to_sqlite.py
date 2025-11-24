@@ -276,35 +276,29 @@ class SyncRun(BaseModel):
     error_message = TextField(null=True)
 
 
-# Define explicit through models for many-to-many relationships
+# Junction tables for many-to-many relationships
 class MemberLabel(BaseModel):
-    member = ForeignKeyField(Member, backref="member_labels")
-    label = ForeignKeyField(Label, backref="label_members")
+    member = ForeignKeyField(Member)
+    label = ForeignKeyField(Label)
 
     class Meta:
-        indexes = (
-            (("member", "label"), True),  # Unique constraint on member-label pair
-        )
+        indexes = ((("member", "label"), True),)
 
 
 class MemberNewsletter(BaseModel):
-    member = ForeignKeyField(Member, backref="member_newsletters")
-    newsletter = ForeignKeyField(Newsletter, backref="newsletter_members")
+    member = ForeignKeyField(Member)
+    newsletter = ForeignKeyField(Newsletter)
 
     class Meta:
-        indexes = (
-            (("member", "newsletter"), True),  # Unique constraint on member-newsletter pair
-        )
+        indexes = ((("member", "newsletter"), True),)
 
 
 class MemberTier(BaseModel):
-    member = ForeignKeyField(Member, backref="member_tiers")
-    tier = ForeignKeyField(Tier, backref="tier_members")
+    member = ForeignKeyField(Member)
+    tier = ForeignKeyField(Tier)
 
     class Meta:
-        indexes = (
-            (("member", "tier"), True),  # Unique constraint on member-tier pair
-        )
+        indexes = ((("member", "tier"), True),)
 
 
 def setup_database_pragmas():
@@ -534,27 +528,29 @@ def insert_member(
     Member.replace(member_data).execute()
 
 
-def _insert_many_to_many(member_id: str, items: List[Dict[str, Any]],
-                         model_class, relationship_class, fields: List[str]) -> None:
-    """Generic helper for inserting many-to-many relationships"""
-    member = Member.get_by_id(member_id)
-    for item_data in items:
-        data = {field: item_data.get(field) for field in fields}
-        model_class.replace(**data).execute()
-        item = model_class.get_by_id(item_data["id"])
-        relationship_class.get_or_create(member=member, **{model_class.__name__.lower(): item})
-
-
 def insert_labels(member_id: str, labels: List[Dict[str, Any]]) -> None:
     """Insert labels and member-label relationships"""
-    _insert_many_to_many(member_id, labels, Label, MemberLabel,
-                         ["id", "name", "slug", "created_at", "updated_at"])
+    for label_data in labels:
+        Label.replace(
+            id=label_data["id"],
+            name=label_data["name"],
+            slug=label_data["slug"],
+            created_at=label_data["created_at"],
+            updated_at=label_data["updated_at"],
+        ).execute()
+        MemberLabel.get_or_create(member=member_id, label=label_data["id"])
 
 
 def insert_newsletters(member_id: str, newsletters: List[Dict[str, Any]]) -> None:
     """Insert newsletters and member-newsletter relationships"""
-    _insert_many_to_many(member_id, newsletters, Newsletter, MemberNewsletter,
-                         ["id", "name", "description", "status"])
+    for newsletter_data in newsletters:
+        Newsletter.replace(
+            id=newsletter_data["id"],
+            name=newsletter_data["name"],
+            description=newsletter_data.get("description"),
+            status=newsletter_data["status"],
+        ).execute()
+        MemberNewsletter.get_or_create(member=member_id, newsletter=newsletter_data["id"])
 
 
 def insert_subscriptions(member_id: str, subscriptions: List[Dict[str, Any]]) -> None:
@@ -582,10 +578,22 @@ def insert_subscriptions(member_id: str, subscriptions: List[Dict[str, Any]]) ->
 
 def insert_tiers(member_id: str, tiers: List[Dict[str, Any]]) -> None:
     """Insert tiers and member-tier relationships"""
-    _insert_many_to_many(member_id, tiers, Tier, MemberTier,
-                         ["id", "name", "slug", "active", "trial_days", "description",
-                          "type", "currency", "monthly_price", "yearly_price",
-                          "created_at", "updated_at"])
+    for tier_data in tiers:
+        Tier.replace(
+            id=tier_data["id"],
+            name=tier_data["name"],
+            slug=tier_data["slug"],
+            active=tier_data.get("active", True),
+            trial_days=tier_data.get("trial_days", 0),
+            description=tier_data.get("description"),
+            type=tier_data.get("type"),
+            currency=tier_data.get("currency"),
+            monthly_price=tier_data.get("monthly_price", 0),
+            yearly_price=tier_data.get("yearly_price", 0),
+            created_at=tier_data["created_at"],
+            updated_at=tier_data["updated_at"],
+        ).execute()
+        MemberTier.get_or_create(member=member_id, tier=tier_data["id"])
 
 
 def insert_email_recipients(
