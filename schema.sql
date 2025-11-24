@@ -342,6 +342,51 @@ CREATE TABLE IF NOT EXISTS sync_runs (
     members_saved INTEGER DEFAULT 0,
     error_message TEXT
 );
+--
+-- ======= REPORTS =======
+--
+
+-- Member Cohort Retention (Subscription-Based)
+-- Shows % of each cohort still subscribed at month 1, 2, 3, 6, 12
+-- Only shows retention for periods that have actually elapsed
+/*
+WITH cohort_data AS (
+  SELECT
+    date(join_date, 'start of month') AS cohort_month,
+    COUNT(DISTINCT member_id) AS cohort_size,
+    COUNT(DISTINCT CASE WHEN leave_date IS NULL OR date(leave_date) >= date(join_date, '+1 months') THEN member_id END) AS m1_active,
+    COUNT(DISTINCT CASE WHEN leave_date IS NULL OR date(leave_date) >= date(join_date, '+2 months') THEN member_id END) AS m2_active,
+    COUNT(DISTINCT CASE WHEN leave_date IS NULL OR date(leave_date) >= date(join_date, '+3 months') THEN member_id END) AS m3_active,
+    COUNT(DISTINCT CASE WHEN leave_date IS NULL OR date(leave_date) >= date(join_date, '+6 months') THEN member_id END) AS m6_active,
+    COUNT(DISTINCT CASE WHEN leave_date IS NULL OR date(leave_date) >= date(join_date, '+12 months') THEN member_id END) AS m12_active
+  FROM newsletter_timeline
+  WHERE join_date IS NOT NULL
+  GROUP BY cohort_month
+  ORDER BY cohort_month DESC
+  LIMIT 24
+)
+SELECT
+  cohort_month,
+  cohort_size,
+  100.0 AS m0_join,
+  CASE WHEN date(cohort_month, '+1 months') <= date('now')
+       THEN ROUND(100.0 * m1_active / cohort_size, 1)
+       ELSE NULL END AS m1_retention,
+  CASE WHEN date(cohort_month, '+2 months') <= date('now')
+       THEN ROUND(100.0 * m2_active / cohort_size, 1)
+       ELSE NULL END AS m2_retention,
+  CASE WHEN date(cohort_month, '+3 months') <= date('now')
+       THEN ROUND(100.0 * m3_active / cohort_size, 1)
+       ELSE NULL END AS m3_retention,
+  CASE WHEN date(cohort_month, '+6 months') <= date('now')
+       THEN ROUND(100.0 * m6_active / cohort_size, 1)
+       ELSE NULL END AS m6_retention,
+  CASE WHEN date(cohort_month, '+12 months') <= date('now')
+       THEN ROUND(100.0 * m12_active / cohort_size, 1)
+       ELSE NULL END AS m12_retention
+FROM cohort_data;
+*/
+
 
 -- ============================================
 -- SAMPLE QUERIES
