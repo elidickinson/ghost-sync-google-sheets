@@ -34,15 +34,15 @@ class TestDatabaseSetup:
             tables = {row[0] for row in cursor.fetchall()}
 
             required_tables = {
-                "members",
-                "labels",
-                "member_labels",
-                "newsletters",
-                "member_newsletters",
-                "tiers",
-                "member_tiers",
-                "subscriptions",
-                "sync_runs",
+                "member",
+                "label",
+                "member_label",
+                "newsletter",
+                "member_newsletter",
+                "tier",
+                "member_tier",
+                "subscription",
+                "sync_run",
             }
             print(f"Actual tables: {tables}")
             assert required_tables.issubset(tables)
@@ -85,7 +85,7 @@ class TestMemberInsertion:
             members_to_sqlite.database.commit()
 
             cursor.execute(
-                "SELECT email, name FROM members WHERE id = ?", ("test_123",)
+                "SELECT email, name FROM member WHERE id = ?", ("test_123",)
             )
             result = cursor.fetchone()
             assert result == ("test@example.com", "Test User")
@@ -130,7 +130,7 @@ class TestMemberInsertion:
             members_to_sqlite.database.commit()
 
             cursor.execute(
-                "SELECT COUNT(*), name FROM members WHERE id = ?", ("test_123",)
+                "SELECT COUNT(*), name FROM member WHERE id = ?", ("test_123",)
             )
             result = cursor.fetchone()
             assert result == (1, "Test User V2")

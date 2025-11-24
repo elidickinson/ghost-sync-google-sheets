@@ -15,6 +15,7 @@ import time
 import hmac
 import hashlib
 import base64
+import re
 import requests
 import logging
 import sys
@@ -62,6 +63,14 @@ DATABASE_FILE = os.getenv(
 )  # SQLite database file name
 SCHEMA_FILE = "schema.sql"  # Database schema file name
 
+
+def make_table_name(model):
+    """Convert CamelCase model name to snake_case table name"""
+    model_name = model.__name__ if hasattr(model, '__name__') else str(model)
+    name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', model_name)
+    return re.sub('([a-z0-9])([A-Z])', r'\1_\2', name).lower()
+
+
 # Initialize peewee database
 database = SqliteDatabase(DATABASE_FILE)
 
@@ -72,10 +81,11 @@ database = SqliteDatabase(DATABASE_FILE)
 
 
 class BaseModel(Model):
-    """Base model class that uses our database"""
+    """Base model class that uses our database and auto-generates table names"""
 
     class Meta:
         database = database
+        table_function = make_table_name
 
 
 class Member(BaseModel):
@@ -109,7 +119,6 @@ class Member(BaseModel):
     attribution_referrer_url = TextField(null=True)
 
     class Meta:
-        table_name = "members"
         indexes = (
             (("email",), False),
             (("created_at",), False),
@@ -131,7 +140,6 @@ class Label(BaseModel):
     updated_at = TextField()
 
     class Meta:
-        table_name = "labels"
         indexes = ((("name",), False),)
 
 
@@ -144,7 +152,6 @@ class Newsletter(BaseModel):
     status = TextField()
 
     class Meta:
-        table_name = "newsletters"
         indexes = (
             (("name",), False),
             (("status",), False),
@@ -168,7 +175,6 @@ class Tier(BaseModel):
     updated_at = TextField()
 
     class Meta:
-        table_name = "tiers"
         indexes = (
             (("name",), False),
             (("active",), False),
@@ -195,7 +201,6 @@ class Subscription(BaseModel):
     offer = TextField(null=True)
 
     class Meta:
-        table_name = "subscriptions"
         indexes = (
             (("member",), False),
             (("status",), False),
@@ -232,7 +237,6 @@ class Email(BaseModel):
     csd_email_count = IntegerField(null=True)
 
     class Meta:
-        table_name = "emails"
         indexes = (
             (("created_at",), False),
             (("status",), False),
@@ -254,7 +258,6 @@ class EmailRecipient(BaseModel):
     failed_at = TextField(null=True)
 
     class Meta:
-        table_name = "email_recipients"
         indexes = (
             (("member",), False),
             (("email",), False),
@@ -272,9 +275,6 @@ class SyncRun(BaseModel):
     members_saved = IntegerField(default=0)
     error_message = TextField(null=True)
 
-    class Meta:
-        table_name = "sync_runs"
-
 
 # Define explicit through models for many-to-many relationships
 class MemberLabel(BaseModel):
@@ -282,7 +282,6 @@ class MemberLabel(BaseModel):
     label = ForeignKeyField(Label, backref="label_members")
 
     class Meta:
-        table_name = "member_labels"
         indexes = (
             (("member", "label"), True),  # Unique constraint on member-label pair
         )
@@ -293,12 +292,8 @@ class MemberNewsletter(BaseModel):
     newsletter = ForeignKeyField(Newsletter, backref="newsletter_members")
 
     class Meta:
-        table_name = "member_newsletters"
         indexes = (
-            (
-                ("member", "newsletter"),
-                True,
-            ),  # Unique constraint on member-newsletter pair
+            (("member", "newsletter"), True),  # Unique constraint on member-newsletter pair
         )
 
 
@@ -307,7 +302,6 @@ class MemberTier(BaseModel):
     tier = ForeignKeyField(Tier, backref="tier_members")
 
     class Meta:
-        table_name = "member_tiers"
         indexes = (
             (("member", "tier"), True),  # Unique constraint on member-tier pair
         )
