@@ -253,6 +253,7 @@ LEFT JOIN email_recipients er ON m.id = er.member_id
 LEFT JOIN subscriptions s ON m.id = s.member_id AND s.status = 'active'
 LEFT JOIN member_tiers mt ON m.id = mt.member_id
 LEFT JOIN tiers t ON mt.tier_id = t.id
+WHERE m.deleted_at IS NULL
 GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.email_count,
          m.email_opened_count, m.email_open_rate, m.created_at, m.last_seen_at;
 
@@ -273,6 +274,8 @@ SELECT
     COUNT(DISTINCT CASE WHEN er.opened_at IS NOT NULL THEN er.member_id END) as unique_opens
 FROM emails e
 LEFT JOIN email_recipients er ON e.id = er.email_id
+LEFT JOIN members m ON er.member_id = m.id
+WHERE m.deleted_at IS NULL
 GROUP BY e.id, e.subject, e.status, e.email_count, e.delivered_count,
          e.opened_count, e.failed_count, e.created_at, e.submitted_at;
 
@@ -290,6 +293,7 @@ SELECT
 FROM members m
 LEFT JOIN member_labels ml ON m.id = ml.member_id
 LEFT JOIN labels l ON ml.label_id = l.id
+WHERE m.deleted_at IS NULL
 GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.email_open_rate, m.created_at;
 
 -- Subscription overview view
@@ -309,6 +313,7 @@ FROM members m
 LEFT JOIN subscriptions s ON m.id = s.member_id
 LEFT JOIN member_tiers mt ON m.id = mt.member_id
 LEFT JOIN tiers t ON mt.tier_id = t.id
+WHERE m.deleted_at IS NULL
 GROUP BY m.id, m.email, m.name, m.status;
 
 -- Newsletter subscription timeline view
@@ -334,6 +339,7 @@ SELECT
 FROM members m
 LEFT JOIN email_recipients er ON m.id = er.member_id
 LEFT JOIN emails e ON er.email_id = e.id
+WHERE m.deleted_at IS NULL
 GROUP BY m.id, m.email, m.name, m.subscribed, m.status, m.created_at
 HAVING MIN(e.submitted_at) IS NOT NULL;
 
@@ -404,7 +410,7 @@ FROM cohort_data;
 -- Get top 10 most engaged members
 SELECT email, name, status, email_open_rate, email_opened_count, email_count
 FROM members
-WHERE email_count > 0
+WHERE email_count > 0 AND deleted_at IS NULL
 ORDER BY email_open_rate DESC, email_opened_count DESC
 LIMIT 10;
 
@@ -421,7 +427,7 @@ SELECT m.email, m.name, m.status, m.email_open_rate
 FROM members m
 JOIN member_labels ml ON m.id = ml.member_id
 JOIN labels l ON ml.label_id = l.id
-WHERE l.name IN ('Marketing_Optout', 'VIP')
+WHERE l.name IN ('Marketing_Optout', 'VIP') AND m.deleted_at IS NULL
 ORDER BY m.email_open_rate DESC;
 
 -- Email engagement trends over time
@@ -443,6 +449,7 @@ JOIN emails e ON er.email_id = e.id
 WHERE e.created_at >= date('now', '-7 days')
   AND er.opened_at IS NULL
   AND er.delivered_at IS NOT NULL
+  AND m.deleted_at IS NULL
 ORDER BY m.email_open_rate DESC;
 
 -- Get active subscribers by tier
@@ -450,7 +457,7 @@ SELECT t.name as tier_name, COUNT(DISTINCT m.id) as member_count
 FROM members m
 JOIN member_tiers mt ON m.id = mt.member_id
 JOIN tiers t ON mt.tier_id = t.id
-WHERE m.status = 'paid' AND t.active = 1
+WHERE m.status = 'paid' AND t.active = 1 AND m.deleted_at IS NULL
 GROUP BY t.name
 ORDER BY member_count DESC;
 
@@ -460,6 +467,7 @@ FROM members m
 JOIN subscriptions s ON m.id = s.member_id
 WHERE s.status = 'active'
   AND s.current_period_end <= date('now', '+30 days')
+  AND m.deleted_at IS NULL
 ORDER BY s.current_period_end ASC;
 
 -- Member lifecycle analysis - when members become paid subscribers
@@ -469,7 +477,7 @@ SELECT
     COUNT(m.id) as members
 FROM members m
 JOIN subscriptions s ON m.id = s.member_id
-WHERE m.status = 'paid'
+WHERE m.status = 'paid' AND m.deleted_at IS NULL
 GROUP BY DATE(m.created_at)
 ORDER BY join_date DESC;
 */
