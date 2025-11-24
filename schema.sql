@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS members (
     unsubscribe_url TEXT,                   -- URL for unsubscribing
     email_suppression TEXT,                 -- JSON string with email suppression information
     deleted_at TEXT,                        -- ISO timestamp when member was soft deleted (NULL if active)
-    -- Attribution fields (NULL means not pulled yet)
+    -- Attribution fields
+    -- attribution_id: NULL = not yet fetched, '' (empty string) = fetched but no attribution exists
     attribution_id TEXT,                    -- ID of the attributed post/page
     attribution_type TEXT,                  -- Type of attribution (post, page, etc.)
     attribution_url TEXT,                   -- URL of the attributed content

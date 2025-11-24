@@ -183,6 +183,9 @@ def make_ghost_request(
 def fetch_member_attribution(member_id: str) -> Optional[Dict[str, Any]]:
     """
     Fetch attribution data for a single member using the read endpoint
+    
+    Note: This function uses make_ghost_request which includes exponential backoff retry logic.
+    If the API call fails, it will retry up to 3 times with 1s, 2s, and 4s delays before giving up.
 
     Args:
         member_id: Ghost member ID
@@ -807,6 +810,13 @@ def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool 
                             attribution = fetch_member_attribution(member["id"])
                             if attribution:
                                 logger.debug(f"Fetched attribution for {member.get('email')}")
+                        
+                        # Report progress every 50 members when fetching attribution
+                        if total_saved % 50 == 0 and total_saved > 0:
+                            attribution_count = cursor.execute(
+                                "SELECT COUNT(*) FROM members WHERE attribution_id IS NOT NULL AND attribution_id != ''"
+                            ).fetchone()[0]
+                            logger.info(f"Progress: {total_saved} members processed, {attribution_count} with attribution")
 
                     # Insert member with attribution data
                     insert_member(cursor, member, attribution)
@@ -838,7 +848,9 @@ def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool 
 
                     page_saved += 1
 
-                # Commit this page
+                # Commit after each page of members is processed
+                # This provides a good balance between memory usage and performance
+                # Page size is controlled by MEMBERS_PAGE_SIZE (100 members - max allowed by Ghost API)
                 conn.commit()
                 total_saved += page_saved
 
@@ -1001,7 +1013,9 @@ def backfill_attribution() -> int:
                         WHERE id = ?
                     """, (member_id,))
 
-                # Commit every 10 members
+                # Commit every 10 members to balance memory usage and performance
+                # This ensures progress isn't lost if the process crashes, but avoids
+                # excessive disk I/O from committing on every single record
                 if i % 10 == 0:
                     conn.commit()
                     logger.info(f"Progress: {i}/{total_members} members processed ({backfilled_count} with attribution)")
