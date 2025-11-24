@@ -16,7 +16,6 @@ import hmac
 import hashlib
 import base64
 import requests
-import sqlite3
 import logging
 import sys
 import argparse
@@ -24,6 +23,19 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timezone
 import os
 from dotenv import load_dotenv
+from peewee import (
+    SqliteDatabase,
+    Model,
+    CharField,
+    TextField,
+    BooleanField,
+    IntegerField,
+    ForeignKeyField,
+    ManyToManyField,
+    DatabaseError,
+    fn,
+    AutoField,
+)
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,16 +54,6 @@ logger = logging.getLogger(__name__)
 # ============================================
 
 
-def get_db_connection():
-    """Get optimized database connection with performance pragmas"""
-    conn = sqlite3.connect(DATABASE_FILE)
-    conn.execute("PRAGMA journal_mode = WAL")
-    conn.execute("PRAGMA synchronous = NORMAL")
-    conn.execute("PRAGMA cache_size = 10000")
-    conn.execute("PRAGMA temp_store = MEMORY")
-    return conn
-
-
 GHOST_URL = os.getenv("GHOST_URL")  # Your Ghost URL (no trailing slash)
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")  # Your Admin API Key (format: id:secret)
 MEMBERS_PAGE_SIZE = 100  # Number of members to fetch per page
@@ -59,6 +61,268 @@ DATABASE_FILE = os.getenv(
     "DATABASE_FILE", "ghost_members.db"
 )  # SQLite database file name
 SCHEMA_FILE = "schema.sql"  # Database schema file name
+
+# Initialize peewee database
+database = SqliteDatabase(DATABASE_FILE)
+
+
+# ============================================
+# PEEWEE MODELS
+# ============================================
+
+
+class BaseModel(Model):
+    """Base model class that uses our database"""
+
+    class Meta:
+        database = database
+
+
+class Member(BaseModel):
+    """Ghost member model"""
+
+    id = CharField(primary_key=True)
+    uuid = CharField(unique=True)
+    email = CharField(unique=True)
+    name = TextField(null=True)
+    note = TextField(null=True)
+    geolocation = TextField(null=True)
+    subscribed = BooleanField(default=False)
+    created_at = TextField()
+    updated_at = TextField()
+    avatar_image = TextField(null=True)
+    comped = BooleanField(default=False)
+    email_count = IntegerField(default=0)
+    email_opened_count = IntegerField(default=0)
+    email_open_rate = IntegerField(default=0)
+    status = TextField(null=True)
+    last_seen_at = TextField(null=True)
+    unsubscribe_url = TextField(null=True)
+    email_suppression = TextField(null=True)
+    deleted_at = TextField(null=True)
+    attribution_id = TextField(null=True)
+    attribution_type = TextField(null=True)
+    attribution_url = TextField(null=True)
+    attribution_title = TextField(null=True)
+    attribution_referrer_source = TextField(null=True)
+    attribution_referrer_medium = TextField(null=True)
+    attribution_referrer_url = TextField(null=True)
+
+    class Meta:
+        table_name = "members"
+        indexes = (
+            (("email",), False),
+            (("created_at",), False),
+            (("subscribed",), False),
+            (("email_open_rate",), False),
+            (("status",), False),
+            (("last_seen_at",), False),
+            (("deleted_at",), False),
+        )
+
+
+class Label(BaseModel):
+    """Member label model"""
+
+    id = CharField(primary_key=True)
+    name = TextField()
+    slug = CharField(unique=True)
+    created_at = TextField()
+    updated_at = TextField()
+
+    class Meta:
+        table_name = "labels"
+        indexes = (
+            (("slug",), False),
+            (("name",), False),
+        )
+
+
+class Newsletter(BaseModel):
+    """Newsletter model"""
+
+    id = CharField(primary_key=True)
+    name = TextField()
+    description = TextField(null=True)
+    status = TextField()
+
+    class Meta:
+        table_name = "newsletters"
+        indexes = (
+            (("name",), False),
+            (("status",), False),
+        )
+
+
+class Tier(BaseModel):
+    """Tier model"""
+
+    id = CharField(primary_key=True)
+    name = TextField()
+    slug = CharField(unique=True)
+    active = BooleanField(default=True)
+    trial_days = IntegerField(default=0)
+    description = TextField(null=True)
+    type = TextField(null=True)
+    currency = TextField(null=True)
+    monthly_price = IntegerField(default=0)
+    yearly_price = IntegerField(default=0)
+    created_at = TextField()
+    updated_at = TextField()
+
+    class Meta:
+        table_name = "tiers"
+        indexes = (
+            (("slug",), False),
+            (("name",), False),
+            (("active",), False),
+        )
+
+
+class Subscription(BaseModel):
+    """Subscription model"""
+
+    id = CharField(primary_key=True)
+    member = ForeignKeyField(Member, backref="subscriptions", on_delete="CASCADE")
+    customer = TextField(null=True)
+    status = TextField()
+    start_date = TextField(null=True)
+    default_payment_card_last4 = TextField(null=True)
+    cancel_at_period_end = BooleanField(default=False)
+    cancellation_reason = TextField(null=True)
+    current_period_end = TextField(null=True)
+    trial_start_at = TextField(null=True)
+    trial_end_at = TextField(null=True)
+    price = TextField(null=True)
+    tier_id = TextField(null=True)
+    tier_name = TextField(null=True)
+    offer = TextField(null=True)
+
+    class Meta:
+        table_name = "subscriptions"
+        indexes = (
+            (("member",), False),
+            (("status",), False),
+            (("current_period_end",), False),
+        )
+
+
+class Email(BaseModel):
+    """Email model"""
+
+    id = CharField(primary_key=True)
+    post_id = TextField(null=True)
+    uuid = CharField(unique=True)
+    status = TextField()
+    recipient_filter = TextField(null=True)
+    error = TextField(null=True)
+    error_data = TextField(null=True)
+    email_count = IntegerField(default=0)
+    delivered_count = IntegerField(default=0)
+    opened_count = IntegerField(default=0)
+    failed_count = IntegerField(default=0)
+    subject = TextField()
+    from_address = TextField(null=True)
+    reply_to = TextField(null=True)
+    source = TextField(null=True)
+    source_type = TextField(null=True)
+    track_opens = BooleanField(default=True)
+    track_clicks = BooleanField(default=True)
+    feedback_enabled = BooleanField(default=False)
+    submitted_at = TextField(null=True)
+    newsletter_id = TextField(null=True)
+    created_at = TextField()
+    updated_at = TextField()
+    csd_email_count = IntegerField(null=True)
+
+    class Meta:
+        table_name = "emails"
+        indexes = (
+            (("created_at",), False),
+            (("status",), False),
+            (("subject",), False),
+            (("newsletter_id",), False),
+        )
+
+
+class EmailRecipient(BaseModel):
+    """Email recipient model"""
+
+    id = CharField(primary_key=True)
+    email = ForeignKeyField(Email, backref="recipients", on_delete="CASCADE")
+    member = ForeignKeyField(Member, backref="email_recipients", on_delete="CASCADE")
+    batch_id = TextField(null=True)
+    processed_at = TextField(null=True)
+    delivered_at = TextField(null=True)
+    opened_at = TextField(null=True)
+    failed_at = TextField(null=True)
+
+    class Meta:
+        table_name = "email_recipients"
+        indexes = (
+            (("member",), False),
+            (("email",), False),
+        )
+
+
+class SyncRun(BaseModel):
+    """Sync run tracking model"""
+
+    id = AutoField()
+    started_at = TextField()
+    completed_at = TextField(null=True)
+    status = TextField()
+    members_fetched = IntegerField(default=0)
+    members_saved = IntegerField(default=0)
+    error_message = TextField(null=True)
+
+    class Meta:
+        table_name = "sync_runs"
+
+
+# Define explicit through models for many-to-many relationships
+class MemberLabel(BaseModel):
+    member = ForeignKeyField(Member, backref="member_labels")
+    label = ForeignKeyField(Label, backref="label_members")
+
+    class Meta:
+        table_name = "member_labels"
+        indexes = (
+            (("member", "label"), True),  # Unique constraint on member-label pair
+        )
+
+
+class MemberNewsletter(BaseModel):
+    member = ForeignKeyField(Member, backref="member_newsletters")
+    newsletter = ForeignKeyField(Newsletter, backref="newsletter_members")
+
+    class Meta:
+        table_name = "member_newsletters"
+        indexes = (
+            (
+                ("member", "newsletter"),
+                True,
+            ),  # Unique constraint on member-newsletter pair
+        )
+
+
+class MemberTier(BaseModel):
+    member = ForeignKeyField(Member, backref="member_tiers")
+    tier = ForeignKeyField(Tier, backref="tier_members")
+
+    class Meta:
+        table_name = "member_tiers"
+        indexes = (
+            (("member", "tier"), True),  # Unique constraint on member-tier pair
+        )
+
+
+def setup_database_pragmas():
+    """Set up performance pragmas for the database"""
+    database.execute_sql("PRAGMA journal_mode = WAL")
+    database.execute_sql("PRAGMA synchronous = NORMAL")
+    database.execute_sql("PRAGMA cache_size = 10000")
+    database.execute_sql("PRAGMA temp_store = MEMORY")
 
 
 # ============================================
@@ -211,20 +475,33 @@ def fetch_member_attribution(member_id: str) -> Optional[Dict[str, Any]]:
 
 
 def setup_database():
-    """Create SQLite database and tables using schema.sql file"""
-    # Read schema from file
-    with open(SCHEMA_FILE, "r") as f:
-        schema_sql = f.read()
+    """Create SQLite database and tables using peewee models"""
+    # Ensure models are bound to the current database instance
+    models = [
+        Member,
+        Label,
+        Newsletter,
+        Tier,
+        Subscription,
+        Email,
+        EmailRecipient,
+        SyncRun,
+        MemberLabel,
+        MemberNewsletter,
+        MemberTier,
+    ]
+    database.bind(models)
 
-    # Connect to database and execute schema
-    conn = get_db_connection()
+    database.connect()
+    setup_database_pragmas()
 
-    # Use executescript to handle the entire schema at once
-    # This properly handles multi-line statements and comments
-    conn.executescript(schema_sql)
+    try:
+        database.create_tables(models)
+    except Exception as e:
+        logger.error(f"Error creating tables: {e}")
+        raise
 
-    conn.commit()
-    conn.close()
+    database.close()
     logger.info(f"Database '{DATABASE_FILE}' initialized successfully")
 
 
@@ -233,431 +510,208 @@ def setup_database():
 # ============================================
 
 
-def insert_member(cursor: sqlite3.Cursor, member: Dict[str, Any], attribution: Optional[Dict[str, Any]] = None) -> None:
-    """Insert or update a member record, restoring soft-deleted members if they reappear
-
-    Args:
-        cursor: Database cursor
-        member: Member data from Ghost API
-        attribution: Attribution data (optional). If None, attribution fields will be preserved or set to NULL for new members.
-    """
-    # Handle email_suppression as JSON string
-    email_suppression = member.get("email_suppression")
+def insert_member(
+    member: Dict[str, Any], attribution: Optional[Dict[str, Any]] = None
+) -> None:
+    """Insert or update a member record, restoring soft-deleted members if they reappear"""
+    # Ensure models are bound to current database
+    models = [
+        Member,
+        Label,
+        MemberLabel,
+        Newsletter,
+        MemberNewsletter,
+        Tier,
+        MemberTier,
+        Subscription,
+        Email,
+        EmailRecipient,
+    ]
+    database.bind(models)
     email_suppression_json = (
-        json.dumps(email_suppression) if email_suppression else None
+        json.dumps(member["email_suppression"])
+        if member.get("email_suppression")
+        else None
     )
 
-    # Extract attribution fields if provided
-    attribution_id = attribution.get("id") if attribution else None
-    attribution_type = attribution.get("type") if attribution else None
-    attribution_url = attribution.get("url") if attribution else None
-    attribution_title = attribution.get("title") if attribution else None
-    attribution_referrer_source = attribution.get("referrer_source") if attribution else None
-    attribution_referrer_medium = attribution.get("referrer_medium") if attribution else None
-    attribution_referrer_url = attribution.get("referrer_url") if attribution else None
+    existing_member = Member.get_or_none(Member.id == member["id"])
 
-    # Check if member exists and is soft deleted
-    cursor.execute("SELECT deleted_at FROM members WHERE id = ?", (member.get("id"),))
-    existing = cursor.fetchone()
+    # Base member data
+    member_data = {
+        "id": member["id"],
+        "uuid": member["uuid"],
+        "email": member["email"],
+        "name": member.get("name"),
+        "note": member.get("note"),
+        "geolocation": member.get("geolocation"),
+        "subscribed": member.get("subscribed", False),
+        "created_at": member["created_at"],
+        "updated_at": member["updated_at"],
+        "avatar_image": member.get("avatar_image"),
+        "comped": member.get("comped", False),
+        "email_count": member.get("email_count", 0),
+        "email_opened_count": member.get("email_opened_count", 0),
+        "email_open_rate": member.get("email_open_rate", 0),
+        "status": member.get("status"),
+        "last_seen_at": member.get("last_seen_at"),
+        "unsubscribe_url": member.get("unsubscribe_url"),
+        "email_suppression": email_suppression_json,
+    }
 
-    if existing and existing[0] is not None:
-        # Member was soft deleted, restore them
-        logger.info(f"Restoring previously deleted member: {member.get('email')}")
-        # For restored members, only update attribution if it was provided
-        if attribution is not None:
-            cursor.execute(
-                """
-                UPDATE members SET
-                    uuid = ?, email = ?, name = ?, note = ?, geolocation = ?, subscribed = ?,
-                    created_at = ?, updated_at = ?, avatar_image = ?, comped = ?,
-                    email_count = ?, email_opened_count = ?, email_open_rate = ?,
-                    status = ?, last_seen_at = ?, unsubscribe_url = ?, email_suppression = ?,
-                    attribution_id = ?, attribution_type = ?, attribution_url = ?, attribution_title = ?,
-                    attribution_referrer_source = ?, attribution_referrer_medium = ?, attribution_referrer_url = ?,
-                    deleted_at = NULL
-                WHERE id = ?
-                """,
-                (
-                    member.get("uuid"),
-                    member.get("email"),
-                    member.get("name"),
-                    member.get("note"),
-                    member.get("geolocation"),
-                    member.get("subscribed"),
-                    member.get("created_at"),
-                    member.get("updated_at"),
-                    member.get("avatar_image"),
-                    member.get("comped"),
-                    member.get("email_count"),
-                    member.get("email_opened_count"),
-                    member.get("email_open_rate"),
-                    member.get("status"),
-                    member.get("last_seen_at"),
-                    member.get("unsubscribe_url"),
-                    email_suppression_json,
-                    attribution_id,
-                    attribution_type,
-                    attribution_url,
-                    attribution_title,
-                    attribution_referrer_source,
-                    attribution_referrer_medium,
-                    attribution_referrer_url,
-                    member.get("id"),
-                ),
-            )
-        else:
-            # Don't update attribution fields if not provided
-            cursor.execute(
-                """
-                UPDATE members SET
-                    uuid = ?, email = ?, name = ?, note = ?, geolocation = ?, subscribed = ?,
-                    created_at = ?, updated_at = ?, avatar_image = ?, comped = ?,
-                    email_count = ?, email_opened_count = ?, email_open_rate = ?,
-                    status = ?, last_seen_at = ?, unsubscribe_url = ?, email_suppression = ?,
-                    deleted_at = NULL
-                WHERE id = ?
-                """,
-                (
-                    member.get("uuid"),
-                    member.get("email"),
-                    member.get("name"),
-                    member.get("note"),
-                    member.get("geolocation"),
-                    member.get("subscribed"),
-                    member.get("created_at"),
-                    member.get("updated_at"),
-                    member.get("avatar_image"),
-                    member.get("comped"),
-                    member.get("email_count"),
-                    member.get("email_opened_count"),
-                    member.get("email_open_rate"),
-                    member.get("status"),
-                    member.get("last_seen_at"),
-                    member.get("unsubscribe_url"),
-                    email_suppression_json,
-                    member.get("id"),
-                ),
-            )
-    else:
-        # Normal insert or update
-        # If attribution is provided, use it; otherwise preserve existing values
-        if attribution is not None:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO members (
-                    id, uuid, email, name, note, geolocation, subscribed,
-                    created_at, updated_at, avatar_image, comped,
-                    email_count, email_opened_count, email_open_rate,
-                    status, last_seen_at, unsubscribe_url, email_suppression, deleted_at,
-                    attribution_id, attribution_type, attribution_url, attribution_title,
-                    attribution_referrer_source, attribution_referrer_medium, attribution_referrer_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    COALESCE((SELECT deleted_at FROM members WHERE id = ?), NULL),
-                    ?, ?, ?, ?, ?, ?, ?
-                )
-                """,
-                (
-                    member.get("id"),
-                    member.get("uuid"),
-                    member.get("email"),
-                    member.get("name"),
-                    member.get("note"),
-                    member.get("geolocation"),
-                    member.get("subscribed"),
-                    member.get("created_at"),
-                    member.get("updated_at"),
-                    member.get("avatar_image"),
-                    member.get("comped"),
-                    member.get("email_count"),
-                    member.get("email_opened_count"),
-                    member.get("email_open_rate"),
-                    member.get("status"),
-                    member.get("last_seen_at"),
-                    member.get("unsubscribe_url"),
-                    email_suppression_json,
-                    member.get("id"),  # For COALESCE subquery
-                    attribution_id,
-                    attribution_type,
-                    attribution_url,
-                    attribution_title,
-                    attribution_referrer_source,
-                    attribution_referrer_medium,
-                    attribution_referrer_url,
-                ),
-            )
-        else:
-            # Don't update attribution fields - preserve existing values
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO members (
-                    id, uuid, email, name, note, geolocation, subscribed,
-                    created_at, updated_at, avatar_image, comped,
-                    email_count, email_opened_count, email_open_rate,
-                    status, last_seen_at, unsubscribe_url, email_suppression, deleted_at,
-                    attribution_id, attribution_type, attribution_url, attribution_title,
-                    attribution_referrer_source, attribution_referrer_medium, attribution_referrer_url
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    COALESCE((SELECT deleted_at FROM members WHERE id = ?), NULL),
-                    COALESCE((SELECT attribution_id FROM members WHERE id = ?), NULL),
-                    COALESCE((SELECT attribution_type FROM members WHERE id = ?), NULL),
-                    COALESCE((SELECT attribution_url FROM members WHERE id = ?), NULL),
-                    COALESCE((SELECT attribution_title FROM members WHERE id = ?), NULL),
-                    COALESCE((SELECT attribution_referrer_source FROM members WHERE id = ?), NULL),
-                    COALESCE((SELECT attribution_referrer_medium FROM members WHERE id = ?), NULL),
-                    COALESCE((SELECT attribution_referrer_url FROM members WHERE id = ?), NULL)
-                )
-                """,
-                (
-                    member.get("id"),
-                    member.get("uuid"),
-                    member.get("email"),
-                    member.get("name"),
-                    member.get("note"),
-                    member.get("geolocation"),
-                    member.get("subscribed"),
-                    member.get("created_at"),
-                    member.get("updated_at"),
-                    member.get("avatar_image"),
-                    member.get("comped"),
-                    member.get("email_count"),
-                    member.get("email_opened_count"),
-                    member.get("email_open_rate"),
-                    member.get("status"),
-                    member.get("last_seen_at"),
-                    member.get("unsubscribe_url"),
-                    email_suppression_json,
-                    member.get("id"),  # For COALESCE deleted_at subquery
-                    member.get("id"),  # For COALESCE attribution_id subquery
-                    member.get("id"),  # For COALESCE attribution_type subquery
-                    member.get("id"),  # For COALESCE attribution_url subquery
-                    member.get("id"),  # For COALESCE attribution_title subquery
-                    member.get("id"),  # For COALESCE attribution_referrer_source subquery
-                    member.get("id"),  # For COALESCE attribution_referrer_medium subquery
-                    member.get("id"),  # For COALESCE attribution_referrer_url subquery
-                ),
-            )
+    # Handle attribution
+    if attribution:
+        member_data.update(
+            {
+                "attribution_id": attribution.get("id"),
+                "attribution_type": attribution.get("type"),
+                "attribution_url": attribution.get("url"),
+                "attribution_title": attribution.get("title"),
+                "attribution_referrer_source": attribution.get("referrer_source"),
+                "attribution_referrer_medium": attribution.get("referrer_medium"),
+                "attribution_referrer_url": attribution.get("referrer_url"),
+            }
+        )
+    elif existing_member:
+        # Preserve existing attribution
+        member_data.update(
+            {
+                "attribution_id": existing_member.attribution_id,
+                "attribution_type": existing_member.attribution_type,
+                "attribution_url": existing_member.attribution_url,
+                "attribution_title": existing_member.attribution_title,
+                "attribution_referrer_source": existing_member.attribution_referrer_source,
+                "attribution_referrer_medium": existing_member.attribution_referrer_medium,
+                "attribution_referrer_url": existing_member.attribution_referrer_url,
+            }
+        )
+
+    # Restore soft-deleted members
+    if existing_member and existing_member.deleted_at:
+        logger.info(f"Restoring previously deleted member: {member['email']}")
+        member_data["deleted_at"] = None
+    elif existing_member:
+        member_data["deleted_at"] = existing_member.deleted_at
+
+    Member.replace(member_data).execute()
 
 
-def insert_labels(
-    cursor: sqlite3.Cursor, member_id: str, labels: List[Dict[str, Any]]
-) -> None:
+def insert_labels(member_id: str, labels: List[Dict[str, Any]]) -> None:
     """Insert labels and member-label relationships"""
-    for label in labels:
-        # Insert label
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO labels (
-                id, name, slug, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?)
-        """,
-            (
-                label.get("id"),
-                label.get("name"),
-                label.get("slug"),
-                label.get("created_at"),
-                label.get("updated_at"),
-            ),
-        )
-
-        # Insert member-label relationship
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO member_labels (member_id, label_id)
-            VALUES (?, ?)
-        """,
-            (member_id, label.get("id")),
-        )
+    member = Member.get_by_id(member_id)
+    for label_data in labels:
+        Label.replace(
+            id=label_data["id"],
+            name=label_data["name"],
+            slug=label_data["slug"],
+            created_at=label_data["created_at"],
+            updated_at=label_data["updated_at"],
+        ).execute()
+        label = Label.get_by_id(label_data["id"])
+        MemberLabel.get_or_create(member=member, label=label)
 
 
-def insert_newsletters(
-    cursor: sqlite3.Cursor, member_id: str, newsletters: List[Dict[str, Any]]
-) -> None:
+def insert_newsletters(member_id: str, newsletters: List[Dict[str, Any]]) -> None:
     """Insert newsletters and member-newsletter relationships"""
-    for newsletter in newsletters:
-        # Insert newsletter
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO newsletters (
-                id, name, description, status
-            ) VALUES (?, ?, ?, ?)
-        """,
-            (
-                newsletter.get("id"),
-                newsletter.get("name"),
-                newsletter.get("description"),
-                newsletter.get("status"),
-            ),
-        )
-
-        # Insert member-newsletter relationship
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO member_newsletters (member_id, newsletter_id)
-            VALUES (?, ?)
-        """,
-            (member_id, newsletter.get("id")),
-        )
+    member = Member.get_by_id(member_id)
+    for newsletter_data in newsletters:
+        Newsletter.replace(
+            id=newsletter_data["id"],
+            name=newsletter_data["name"],
+            description=newsletter_data.get("description"),
+            status=newsletter_data["status"],
+        ).execute()
+        newsletter = Newsletter.get_by_id(newsletter_data["id"])
+        MemberNewsletter.get_or_create(member=member, newsletter=newsletter)
 
 
-def insert_subscriptions(
-    cursor: sqlite3.Cursor, member_id: str, subscriptions: List[Dict[str, Any]]
-) -> None:
+def insert_subscriptions(member_id: str, subscriptions: List[Dict[str, Any]]) -> None:
     """Insert subscriptions for a member"""
-    for subscription in subscriptions:
-        # Store subscription details as JSON strings to avoid complex tables
-        customer = subscription.get("customer")
-        customer_json = json.dumps(customer) if customer else None
-
-        price = subscription.get("price")
-        price_json = json.dumps(price) if price else None
-
-        tier = subscription.get("tier")
-        if tier:
-            # Extract simple tier info instead of storing full JSON
-            tier_id = tier.get("id")
-            tier_name = tier.get("name")
-        else:
-            tier_id = None
-            tier_name = None
-
-        offer = subscription.get("offer")
-        offer_json = json.dumps(offer) if offer else None
-
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO subscriptions (
-                id, member_id, customer, status, start_date,
-                default_payment_card_last4, cancel_at_period_end,
-                cancellation_reason, current_period_end, trial_start_at,
-                trial_end_at, price, tier_id, tier_name, offer
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                subscription.get("id"),
-                member_id,
-                customer_json,
-                subscription.get("status"),
-                subscription.get("start_date"),
-                subscription.get("default_payment_card_last4"),
-                subscription.get("cancel_at_period_end"),
-                subscription.get("cancellation_reason"),
-                subscription.get("current_period_end"),
-                subscription.get("trial_start_at"),
-                subscription.get("trial_end_at"),
-                price_json,
-                tier_id,
-                tier_name,
-                offer_json,
-            ),
-        )
+    for sub in subscriptions:
+        tier = sub.get("tier", {})
+        Subscription.replace(
+            id=sub["id"],
+            member_id=member_id,
+            customer=json.dumps(sub["customer"]) if sub.get("customer") else None,
+            status=sub["status"],
+            start_date=sub.get("start_date"),
+            default_payment_card_last4=sub.get("default_payment_card_last4"),
+            cancel_at_period_end=sub.get("cancel_at_period_end", False),
+            cancellation_reason=sub.get("cancellation_reason"),
+            current_period_end=sub.get("current_period_end"),
+            trial_start_at=sub.get("trial_start_at"),
+            trial_end_at=sub.get("trial_end_at"),
+            price=json.dumps(sub["price"]) if sub.get("price") else None,
+            tier_id=tier.get("id"),
+            tier_name=tier.get("name"),
+            offer=json.dumps(sub["offer"]) if sub.get("offer") else None,
+        ).execute()
 
 
-def insert_tiers(
-    cursor: sqlite3.Cursor, member_id: str, tiers: List[Dict[str, Any]]
-) -> None:
+def insert_tiers(member_id: str, tiers: List[Dict[str, Any]]) -> None:
     """Insert tiers and member-tier relationships"""
-    for tier in tiers:
-        # Insert tier
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO tiers (
-                id, name, slug, active, trial_days, description,
-                type, currency, monthly_price, yearly_price,
-                created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                tier.get("id"),
-                tier.get("name"),
-                tier.get("slug"),
-                tier.get("active"),
-                tier.get("trial_days"),
-                tier.get("description"),
-                tier.get("type"),
-                tier.get("currency"),
-                tier.get("monthly_price"),
-                tier.get("yearly_price"),
-                tier.get("created_at"),
-                tier.get("updated_at"),
-            ),
-        )
-
-        # Insert member-tier relationship
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO member_tiers (member_id, tier_id)
-            VALUES (?, ?)
-        """,
-            (member_id, tier.get("id")),
-        )
+    member = Member.get_by_id(member_id)
+    for tier_data in tiers:
+        Tier.replace(
+            id=tier_data["id"],
+            name=tier_data["name"],
+            slug=tier_data["slug"],
+            active=tier_data.get("active", True),
+            trial_days=tier_data.get("trial_days", 0),
+            description=tier_data.get("description"),
+            type=tier_data.get("type"),
+            currency=tier_data.get("currency"),
+            monthly_price=tier_data.get("monthly_price", 0),
+            yearly_price=tier_data.get("yearly_price", 0),
+            created_at=tier_data["created_at"],
+            updated_at=tier_data["updated_at"],
+        ).execute()
+        tier = Tier.get_by_id(tier_data["id"])
+        MemberTier.get_or_create(member=member, tier=tier)
 
 
 def insert_email_recipients(
-    cursor: sqlite3.Cursor, member_id: str, email_recipients: List[Dict[str, Any]]
+    member_id: str, email_recipients: List[Dict[str, Any]]
 ) -> None:
     """Insert email recipients and related emails"""
     for recipient in email_recipients:
-        # Insert email recipient
-        cursor.execute(
-            """
-            INSERT OR REPLACE INTO email_recipients (
-                id, email_id, member_id, batch_id, processed_at,
-                delivered_at, opened_at, failed_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-            (
-                recipient.get("id"),
-                recipient.get("email_id"),
-                member_id,
-                recipient.get("batch_id"),
-                recipient.get("processed_at"),
-                recipient.get("delivered_at"),
-                recipient.get("opened_at"),
-                recipient.get("failed_at"),
-            ),
-        )
+        EmailRecipient.replace(
+            id=recipient["id"],
+            email_id=recipient["email_id"],
+            member_id=member_id,
+            batch_id=recipient.get("batch_id"),
+            processed_at=recipient.get("processed_at"),
+            delivered_at=recipient.get("delivered_at"),
+            opened_at=recipient.get("opened_at"),
+            failed_at=recipient.get("failed_at"),
+        ).execute()
 
-        # Insert related email if present
-        email_data = recipient.get("email")
-        if email_data:
-            cursor.execute(
-                """
-                INSERT OR REPLACE INTO emails (
-                    id, post_id, uuid, status, recipient_filter,
-                    error, error_data, email_count, delivered_count, opened_count,
-                    failed_count, subject, from_address, reply_to,
-                    source, source_type, track_opens, track_clicks,
-                    feedback_enabled, submitted_at, newsletter_id,
-                    created_at, updated_at, csd_email_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-                (
-                    email_data.get("id"),
-                    email_data.get("post_id"),
-                    email_data.get("uuid"),
-                    email_data.get("status"),
-                    email_data.get("recipient_filter"),
-                    email_data.get("error"),
-                    email_data.get("error_data"),
-                    email_data.get("email_count"),
-                    email_data.get("delivered_count"),
-                    email_data.get("opened_count"),
-                    email_data.get("failed_count"),
-                    email_data.get("subject"),
-                    email_data.get("from"),
-                    email_data.get("reply_to"),
-                    email_data.get("source"),
-                    email_data.get("source_type"),
-                    email_data.get("track_opens"),
-                    email_data.get("track_clicks"),
-                    email_data.get("feedback_enabled"),
-                    email_data.get("submitted_at"),
-                    email_data.get("newsletter_id"),
-                    email_data.get("created_at"),
-                    email_data.get("updated_at"),
-                    email_data.get("csd_email_count"),
-                ),
-            )
+        if email_data := recipient.get("email"):
+            Email.replace(
+                id=email_data["id"],
+                post_id=email_data.get("post_id"),
+                uuid=email_data["uuid"],
+                status=email_data["status"],
+                recipient_filter=email_data.get("recipient_filter"),
+                error=email_data.get("error"),
+                error_data=email_data.get("error_data"),
+                email_count=email_data.get("email_count", 0),
+                delivered_count=email_data.get("delivered_count", 0),
+                opened_count=email_data.get("opened_count", 0),
+                failed_count=email_data.get("failed_count", 0),
+                subject=email_data["subject"],
+                from_address=email_data.get("from"),
+                reply_to=email_data.get("reply_to"),
+                source=email_data.get("source"),
+                source_type=email_data.get("source_type"),
+                track_opens=email_data.get("track_opens", True),
+                track_clicks=email_data.get("track_clicks", True),
+                feedback_enabled=email_data.get("feedback_enabled", False),
+                submitted_at=email_data.get("submitted_at"),
+                newsletter_id=email_data.get("newsletter_id"),
+                created_at=email_data["created_at"],
+                updated_at=email_data["updated_at"],
+                csd_email_count=email_data.get("csd_email_count"),
+            ).execute()
 
 
 # ============================================
@@ -668,34 +722,32 @@ def insert_email_recipients(
 def get_last_sync_time() -> Optional[str]:
     """Get the timestamp of the last successful sync"""
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        # Ensure models are bound to current database
+        database.bind([SyncRun])
 
-        cursor.execute("""
-            SELECT completed_at
-            FROM sync_runs
-            WHERE status = 'completed'
-            ORDER BY completed_at DESC
-            LIMIT 1
-        """)
+        sync_run = (
+            SyncRun.select(SyncRun.completed_at)
+            .where(SyncRun.status == "completed")
+            .order_by(SyncRun.completed_at.desc())
+            .first()
+        )
 
-        result = cursor.fetchone()
-        conn.close()
-
-        if result and result[0]:
-            return result[0]
+        if sync_run and sync_run.completed_at:
+            return sync_run.completed_at
         return None
-    except sqlite3.OperationalError:
+    except DatabaseError:
         # Table doesn't exist yet (first run)
         return None
+    except Exception:
+        # Database file doesn't exist or other error
+        return None
 
 
-def soft_delete_missing_members(cursor, fetched_member_ids: set) -> int:
+def soft_delete_missing_members(fetched_member_ids: set) -> int:
     """
     Soft delete members that are in the database but not in the fetched member IDs
 
     Args:
-        cursor: Database cursor
         fetched_member_ids: Set of member IDs fetched from Ghost API
 
     Returns:
@@ -704,38 +756,38 @@ def soft_delete_missing_members(cursor, fetched_member_ids: set) -> int:
     if not fetched_member_ids:
         return 0
 
-    # Get all active member IDs from database (not already soft deleted)
-    cursor.execute(
-        """
-        SELECT id FROM members 
-        WHERE deleted_at IS NULL
-        AND id NOT IN ({})
-    """.format(",".join(["?" for _ in fetched_member_ids])),
-        list(fetched_member_ids),
-    )
+    try:
+        # Ensure models are bound to current database
+        database.bind([Member])
+        # Get all active member IDs from database (not already soft deleted)
+        missing_members = Member.select(Member.id).where(
+            (Member.deleted_at.is_null()) & ~(Member.id.in_(fetched_member_ids))
+        )
 
-    missing_ids = [row[0] for row in cursor.fetchall()]
+        missing_ids = [member.id for member in missing_members]
 
-    if not missing_ids:
-        return 0
+        if not missing_ids:
+            return 0
 
-    # Soft delete the missing members
-    deleted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    placeholders = ",".join(["?" for _ in missing_ids])
+        # Soft delete the missing members
+        deleted_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
-    cursor.execute(
-        f"""
-        UPDATE members 
-        SET deleted_at = ?, updated_at = ?
-        WHERE id IN ({placeholders})
-    """,
-        [deleted_at, deleted_at] + missing_ids,
-    )
+        updated_count = (
+            Member.update(deleted_at=deleted_at, updated_at=deleted_at)
+            .where(Member.id.in_(missing_ids))
+            .execute()
+        )
 
-    return cursor.rowcount
+        return updated_count
+
+    except DatabaseError as e:
+        logger.error(f"Database error soft deleting missing members: {e}")
+        raise
 
 
-def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool = False) -> int:
+def fetch_and_save_members(
+    since: Optional[str] = None, fetch_attribution: bool = False
+) -> int:
     """
     Fetch members from Ghost API using pagination and save them to database as they're fetched
 
@@ -756,8 +808,8 @@ def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool 
         logger.info("Fetching and saving all members from Ghost API...")
 
     # Keep database connection open throughout the process
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    if database.is_closed():
+        database.connect()
 
     try:
         # Get total count on first page
@@ -796,50 +848,51 @@ def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool 
                     attribution = None
                     if fetch_attribution:
                         # Check if attribution has already been fetched for this member
-                        cursor.execute(
-                            "SELECT attribution_id FROM members WHERE id = ?",
-                            (member["id"],)
-                        )
-                        existing = cursor.fetchone()
+                        existing_member = Member.get_or_none(Member.id == member["id"])
 
                         # Only fetch if attribution_id is NULL (not yet fetched)
-                        if existing is None or existing[0] is None:
+                        if (
+                            existing_member is None
+                            or existing_member.attribution_id is None
+                        ):
                             attribution = fetch_member_attribution(member["id"])
                             if attribution:
-                                logger.debug(f"Fetched attribution for {member.get('email')}")
+                                logger.debug(
+                                    f"Fetched attribution for {member.get('email')}"
+                                )
 
                     # Insert member with attribution data
-                    insert_member(cursor, member, attribution)
+                    insert_member(member, attribution)
 
                     # Insert labels
                     labels = member.get("labels", [])
                     if labels:
-                        insert_labels(cursor, member["id"], labels)
+                        insert_labels(member["id"], labels)
 
                     # Insert newsletters
                     newsletters = member.get("newsletters", [])
                     if newsletters:
-                        insert_newsletters(cursor, member["id"], newsletters)
+                        insert_newsletters(member["id"], newsletters)
 
                     # Insert subscriptions
                     subscriptions = member.get("subscriptions", [])
                     if subscriptions:
-                        insert_subscriptions(cursor, member["id"], subscriptions)
+                        insert_subscriptions(member["id"], subscriptions)
 
                     # Insert tiers
                     tiers = member.get("tiers", [])
                     if tiers:
-                        insert_tiers(cursor, member["id"], tiers)
+                        insert_tiers(member["id"], tiers)
 
                     # Insert email recipients
                     email_recipients = member.get("email_recipients", [])
                     if email_recipients:
-                        insert_email_recipients(cursor, member["id"], email_recipients)
+                        insert_email_recipients(member["id"], email_recipients)
 
                     page_saved += 1
 
                 # Commit this page
-                conn.commit()
+                database.commit()
                 total_saved += page_saved
 
                 # Show progress vs total
@@ -865,15 +918,15 @@ def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool 
 
         # Soft delete members that are no longer in Ghost API
         if not since:  # Only do deletion detection on full syncs
-            deleted_count = soft_delete_missing_members(cursor, fetched_member_ids)
+            deleted_count = soft_delete_missing_members(fetched_member_ids)
             if deleted_count > 0:
                 logger.info(
                     f"Soft deleted {deleted_count} members no longer in Ghost API"
                 )
-                conn.commit()
+                database.commit()
 
     finally:
-        conn.close()
+        database.close()
 
     logger.info(f"Total members saved: {total_saved}")
     return total_saved
@@ -881,54 +934,52 @@ def fetch_and_save_members(since: Optional[str] = None, fetch_attribution: bool 
 
 def save_members_to_database(members: List[Dict[str, Any]]) -> int:
     """Save members data to SQLite database (legacy function for compatibility)"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
+    database.connect()
     logger.info(f"Saving {len(members)} members to database...")
 
     saved_count = 0
     for i, member in enumerate(members):
         try:
             # Insert member
-            insert_member(cursor, member)
+            insert_member(member)
 
             # Insert labels
             labels = member.get("labels", [])
             if labels:
-                insert_labels(cursor, member["id"], labels)
+                insert_labels(member["id"], labels)
 
             # Insert newsletters
             newsletters = member.get("newsletters", [])
             if newsletters:
-                insert_newsletters(cursor, member["id"], newsletters)
+                insert_newsletters(member["id"], newsletters)
 
             # Insert subscriptions
             subscriptions = member.get("subscriptions", [])
             if subscriptions:
-                insert_subscriptions(cursor, member["id"], subscriptions)
+                insert_subscriptions(member["id"], subscriptions)
 
             # Insert tiers
             tiers = member.get("tiers", [])
             if tiers:
-                insert_tiers(cursor, member["id"], tiers)
+                insert_tiers(member["id"], tiers)
 
             # Insert email recipients
             email_recipients = member.get("email_recipients", [])
             if email_recipients:
-                insert_email_recipients(cursor, member["id"], email_recipients)
+                insert_email_recipients(member["id"], email_recipients)
 
             saved_count += 1
 
             if (i + 1) % 100 == 0:
                 logger.info(f"Processed {i + 1}/{len(members)} members")
-                conn.commit()  # Commit in batches
+                database.commit()  # Commit in batches
 
         except Exception as e:
             logger.error(f"Error processing member {member.get('id', 'unknown')}: {e}")
             # Continue processing other members instead of failing completely
 
-    conn.commit()
-    conn.close()
+    database.commit()
+    database.close()
     logger.info(f"Successfully saved {saved_count}/{len(members)} members to database")
     return saved_count
 
@@ -940,21 +991,16 @@ def backfill_attribution() -> int:
     Returns:
         Number of members with attribution fetched
     """
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    database.connect()
 
     try:
-        # Get all members with NULL attribution_id
-        cursor.execute("""
-            SELECT id, email
-            FROM members
-            WHERE attribution_id IS NULL
-            AND deleted_at IS NULL
-            ORDER BY created_at DESC
-        """)
+        members_to_backfill = (
+            Member.select(Member.id, Member.email)
+            .where((Member.attribution_id.is_null()) & (Member.deleted_at.is_null()))
+            .order_by(Member.created_at.desc())
+        )
 
-        members_to_backfill = cursor.fetchall()
-        total_members = len(members_to_backfill)
+        total_members = members_to_backfill.count()
 
         if total_members == 0:
             logger.info("No members found with missing attribution data")
@@ -966,59 +1012,46 @@ def backfill_attribution() -> int:
         backfilled_count = 0
         failed_count = 0
 
-        for i, (member_id, email) in enumerate(members_to_backfill, 1):
+        for i, member in enumerate(members_to_backfill, 1):
             try:
-                attribution = fetch_member_attribution(member_id)
+                attribution = fetch_member_attribution(member.id)
 
                 if attribution:
-                    # Update only attribution fields
-                    cursor.execute("""
-                        UPDATE members
-                        SET attribution_id = ?,
-                            attribution_type = ?,
-                            attribution_url = ?,
-                            attribution_title = ?,
-                            attribution_referrer_source = ?,
-                            attribution_referrer_medium = ?,
-                            attribution_referrer_url = ?
-                        WHERE id = ?
-                    """, (
-                        attribution.get("id"),
-                        attribution.get("type"),
-                        attribution.get("url"),
-                        attribution.get("title"),
-                        attribution.get("referrer_source"),
-                        attribution.get("referrer_medium"),
-                        attribution.get("referrer_url"),
-                        member_id,
-                    ))
+                    Member.update(
+                        attribution_id=attribution.get("id"),
+                        attribution_type=attribution.get("type"),
+                        attribution_url=attribution.get("url"),
+                        attribution_title=attribution.get("title"),
+                        attribution_referrer_source=attribution.get("referrer_source"),
+                        attribution_referrer_medium=attribution.get("referrer_medium"),
+                        attribution_referrer_url=attribution.get("referrer_url"),
+                    ).where(Member.id == member.id).execute()
                     backfilled_count += 1
                 else:
-                    # Set attribution_id to empty string to mark as "checked but no attribution"
-                    cursor.execute("""
-                        UPDATE members
-                        SET attribution_id = ''
-                        WHERE id = ?
-                    """, (member_id,))
+                    Member.update(attribution_id="").where(
+                        Member.id == member.id
+                    ).execute()
 
-                # Commit every 10 members
                 if i % 10 == 0:
-                    conn.commit()
-                    logger.info(f"Progress: {i}/{total_members} members processed ({backfilled_count} with attribution)")
+                    database.commit()
+                    logger.info(
+                        f"Progress: {i}/{total_members} members processed ({backfilled_count} with attribution)"
+                    )
 
             except Exception as e:
-                logger.warning(f"Failed to fetch attribution for {email}: {e}")
+                logger.warning(f"Failed to fetch attribution for {member.email}: {e}")
                 failed_count += 1
-                continue
 
-        # Final commit
-        conn.commit()
+        database.commit()
 
-        logger.info(f"Backfill complete: {backfilled_count} members with attribution, {total_members - backfilled_count - failed_count} without attribution, {failed_count} failed")
+        logger.info(
+            f"Backfill complete: {backfilled_count} members with attribution, "
+            f"{total_members - backfilled_count - failed_count} without attribution, {failed_count} failed"
+        )
         return backfilled_count
 
     finally:
-        conn.close()
+        database.close()
 
 
 # ============================================
@@ -1094,7 +1127,9 @@ Examples:
         logger.info("Starting attribution backfill mode...")
         try:
             backfilled_count = backfill_attribution()
-            logger.info(f"✅ Attribution backfill completed! {backfilled_count} members updated")
+            logger.info(
+                f"✅ Attribution backfill completed! {backfilled_count} members updated"
+            )
             sys.exit(0)
         except Exception as e:
             logger.error(f"Attribution backfill failed: {e}", exc_info=True)
@@ -1115,57 +1150,45 @@ Examples:
         logger.info(f"Syncing members updated since {since_timestamp}")
 
     # Track sync run
-    conn = get_db_connection()
-    cursor = conn.cursor()
+    database.connect()
 
     # Start tracking this sync run
     started_at = datetime.now(timezone.utc).isoformat()
-    cursor.execute(
-        "INSERT INTO sync_runs (started_at, status) VALUES (?, ?)",
-        (started_at, "running"),
-    )
-    conn.commit()
-    sync_run_id = cursor.lastrowid
+    with database.atomic():
+        sync_run = SyncRun.create(started_at=started_at, status="running")
+        sync_run_id = sync_run.id
 
     try:
         # Fetch and save members (streaming approach)
         logger.info("Starting sync process...")
         if args.attribution:
             logger.info("Attribution fetching enabled (this will be slow)")
-        saved_count = fetch_and_save_members(since=since_timestamp, fetch_attribution=args.attribution)
+        saved_count = fetch_and_save_members(
+            since=since_timestamp, fetch_attribution=args.attribution
+        )
 
         if saved_count == 0:
             logger.warning("No members found to process")
-            cursor.execute(
-                "UPDATE sync_runs SET completed_at = ?, status = ?, members_fetched = 0 WHERE id = ?",
-                (datetime.now(timezone.utc).isoformat(), "completed", sync_run_id),
-            )
-            conn.commit()
-            conn.close()
+            SyncRun.update(
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                status="completed",
+                members_fetched=0,
+            ).where(SyncRun.id == sync_run_id).execute()
+            database.close()
             return
 
         # Update sync run as completed
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE sync_runs SET completed_at = ?, status = ?, members_fetched = ?, members_saved = ? WHERE id = ?",
-            (
-                datetime.now(timezone.utc).isoformat(),
-                "completed",
-                saved_count,
-                saved_count,
-                sync_run_id,
-            ),
-        )
-        conn.commit()
-        conn.close()
+        SyncRun.update(
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            status="completed",
+            members_fetched=saved_count,
+            members_saved=saved_count,
+        ).where(SyncRun.id == sync_run_id).execute()
 
         # Checkpoint WAL to clean up .db-wal file
         try:
-            conn = get_db_connection()
-            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            conn.close()
-        except sqlite3.OperationalError as e:
+            database.execute_sql("PRAGMA wal_checkpoint(TRUNCATE)")
+        except DatabaseError as e:
             logger.warning(f"Could not checkpoint WAL (database may be in use): {e}")
 
         logger.info(
@@ -1176,16 +1199,16 @@ Examples:
         logger.error(f"Sync failed: {e}", exc_info=True)
 
         # Update sync run as failed
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE sync_runs SET completed_at = ?, status = ?, error_message = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), "failed", str(e), sync_run_id),
-        )
-        conn.commit()
-        conn.close()
+        SyncRun.update(
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            status="failed",
+            error_message=str(e),
+        ).where(SyncRun.id == sync_run_id).execute()
 
+        database.close()
         sys.exit(1)
+
+    database.close()
 
 
 if __name__ == "__main__":
