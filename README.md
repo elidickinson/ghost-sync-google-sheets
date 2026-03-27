@@ -48,6 +48,13 @@ Click **Ghost Sync → Settings**, enter your Ghost admin URL and API key, choos
 Create separate analysis sheets using formulas like:
 `=QUERY('Ghost Members'!A:Z, "SELECT * WHERE E='paid'")`
 
+## How Sync Works
+
+- **Sync** fetches all members and updates existing rows or appends new ones
+- **Quick Sync** finds your newest member and only fetches members created after that
+- Deleted members are detected via the `Last Sync Member` timestamp (any row older than sync start is removed)
+- Large syncs survive timeouts by saving progress and resuming via a 1-minute trigger
+
 ## Security
 
 Your Ghost API key provides full admin access:
