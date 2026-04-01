@@ -14,7 +14,11 @@ const GHOST_HEADERS = [
   'Created At', 'Updated At', 'Email Open Rate', 'Email Opened Count',
   'Email Count', 'Note', 'Email Suppressed', 'Labels', 'Newsletters',
   'Tiers', 'Subscriptions', 'Stripe Customer ID', 'Complimentary Plan',
-  'Geolocation', 'Unsubscribe URL', 'Last Seen At', 'Last Sync Member',
+  'Geolocation', 'Unsubscribe URL', 'Last Seen At',
+  'Subscription Start Date', 'Cancel At Period End', 'Current Period End',
+  'Cancellation Reason', 'Trial Start At', 'Trial End At',
+  'Price Amount', 'Price Interval', 'Price Type',
+  'Tier Name', 'Offer Code', 'Last Sync Member',
   'Attribution ID', 'Attribution URL', 'Attribution Type',
   'Attribution Title', 'Referrer Source', 'Referrer Medium', 'Referrer URL',
   'Last Sync Attribution'
@@ -538,6 +542,23 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
   const tiers = mapAndJoin(member.tiers) || '';
   const subscriptions = mapAndJoin(member.subscriptions, 'status') || '';
 
+  // Extract first subscription fields (most members have one)
+  const firstSubscription = member.subscriptions && member.subscriptions.length > 0
+    ? member.subscriptions[0] : {};
+  const subscriptionStartDate = firstSubscription.start_date || '';
+  const cancelAtPeriodEnd = firstSubscription.cancel_at_period_end != null ? (firstSubscription.cancel_at_period_end ? 'Yes' : 'No') : '';
+  const currentPeriodEnd = firstSubscription.current_period_end || '';
+  const cancellationReason = firstSubscription.cancellation_reason || '';
+  const trialStartAt = firstSubscription.trial_start_at || '';
+  const trialEndAt = firstSubscription.trial_end_at || '';
+  const price = firstSubscription.price || {};
+  const priceAmount = price.amount ? price.amount / 100 : '';
+  const priceInterval = price.interval || '';
+  const priceType = price.type || '';
+
+  const tierName = firstSubscription.tier_name || '';
+  const offerCode = firstSubscription.offer && firstSubscription.offer.code ? firstSubscription.offer.code : '';
+
   const emailSuppression = (member.email_suppression && member.email_suppression.suppressed === true)
     ? member.email_suppression.info : '';
 
@@ -562,11 +583,26 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
     member.comped ? 'Yes' : 'No',
     member.geolocation || '',
     member.unsubscribe_url || '',
-    member.last_seen_at ? new Date(member.last_seen_at) : '',
-    new Date(memberSyncTimestamp).toISOString()
+    member.last_seen_at ? new Date(member.last_seen_at) : ''
   ];
 
-  // Include attribution data only if we fetched it
+  // Subscription fields (always present)
+  rowData.push(
+    subscriptionStartDate ? new Date(subscriptionStartDate) : '',
+    cancelAtPeriodEnd,
+    currentPeriodEnd ? new Date(currentPeriodEnd) : '',
+    cancellationReason,
+    trialStartAt ? new Date(trialStartAt) : '',
+    trialEndAt ? new Date(trialEndAt) : '',
+    priceAmount,
+    priceInterval,
+    priceType,
+    tierName,
+    offerCode,
+    new Date(memberSyncTimestamp).toISOString()
+  );
+
+  // Attribution fields (only when fetched)
   if (attributionSyncTimestamp !== null) {
     rowData.push(
       attribution.id || '',
@@ -576,7 +612,7 @@ function memberToRow(member, memberSyncTimestamp, attributionSyncTimestamp = nul
       attribution.referrer_source || '',
       attribution.referrer_medium || '',
       attribution.referrer_url || '',
-      new Date(attributionSyncTimestamp).toISOString()
+      attributionSyncTimestamp === 'error' ? 'error' : new Date(attributionSyncTimestamp).toISOString()
     );
   }
 
@@ -600,8 +636,8 @@ function validateSheetStructure(syncTypeName) {
   const expectedHeadersLength = GHOST_HEADERS.length;
   const lastSyncMemberIndex = GHOST_HEADERS.indexOf('Last Sync Member');
 
-  // All 30 columns are always created by setupSheet() regardless of attribution setting.
-  // Only the data rows vary: 22 columns when attribution is disabled, 30 when enabled.
+  // GHOST_HEADERS has 41 columns: 21 base + 12 subscription + 8 attribution.
+  // Data rows have 33 columns without attribution, 41 with attribution.
   if (headers.length >= expectedHeadersLength &&
       headers[0] === GHOST_HEADERS[0] &&
       headers[1] === GHOST_HEADERS[1] &&
@@ -750,9 +786,11 @@ function getMemberWithAttribution(member, settings, syncStartTime) {
   }
 
   const fullMember = fetchMemberById(settings.ghostUrl, settings.adminApiKey, member.id);
-  return fullMember
-    ? { memberData: fullMember, attributionTimestamp: syncStartTime }
-    : { memberData: member, attributionTimestamp: null };
+  if (!fullMember) {
+    Logger.log(`ERROR: fetchMemberById returned null for member ${member.id} (${member.email}), skipping attribution`);
+    return { memberData: member, attributionTimestamp: 'error' };
+  }
+  return { memberData: fullMember, attributionTimestamp: syncStartTime };
 }
 
 function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced = 0, syncStartTime = null, createdAfterFilter = null) {
@@ -904,7 +942,7 @@ function processMembersSync(isAddNewOnly, lastProcessedId = null, membersSynced 
       // Consequence: These "orphan" rows will persist in the sheet even if the member
       // is deleted from Ghost. This is a rare edge case and safer than accidentally
       // deleting manually added rows.
-      if (lastSyncMemberValue && lastSyncMemberValue < syncStartTimeIso) {
+      if (lastSyncMemberValue && new Date(lastSyncMemberValue) < new Date(syncStartTimeIso)) {
         rowsToDelete.push(i + DATA_START_ROW);
       }
     }

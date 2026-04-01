@@ -1,0 +1,73 @@
+# Python / virtualenv
+.venv/
+**/.venv/
+.venv
+**/.venv/**
+.venv/**/*
+venv/
+ENV/
+env/
+*.pyc
+__pycache__/
+**/__pycache__/
+*.pyo
+*.pyd
+.Python
+*.py
+
+# Ignore any .js files in venv (they shouldn't be there anyway)
+.venv/**/*.js
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Testing
+.pytest_cache/
+.ruff_cache/
+tests/
+
+# Aider
+.aider*
+
+# Git
+.git/
+.gitignore
+
+# Node (if added later)
+node_modules/
+package.json
+package-lock.json
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+config/
+eli/
+example_folder/
+your.db
+
+# Docs (keep GS file, ignore others)
+*.md
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.pdf
+
+# Environment
+.env
+.env.*
+
+# Logs
+*.log
