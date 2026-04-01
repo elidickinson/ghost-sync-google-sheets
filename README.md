@@ -19,6 +19,10 @@ Sync your full Ghost CMS member data to a Google Sheet, including attribution/re
 
 ## Installation
 
+ - Open [this Google Sheet template](https://docs.google.com/spreadsheets/d/1hSy6Y3c11-Pb90t2-OD9m9acoqxJU2jkchrwnWzMxI0/edit?usp=sharing) and follow the instructions
+
+**-OR-**
+
 1. **Create a Google Sheet** then on the menu: Extensions → Apps Script
 2. Delete any existing code and paste in the contents of [GhostMembersSync.gs](./GhostMembersSync.gs)
 3. Hit **Save**, go back to tab with the spreadsheet and **reload**. You should see a new "👻 Ghost Sync" menu in a moment.
